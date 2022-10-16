@@ -38,7 +38,7 @@ mod database;
                         //***/////                 ,*/(((.
                        ///(//////                 ,*/((((/
                       /////*/////                 *////(((
-/* This is stanley. Stanley was given to me by /u/jimmybilly100. Stanley is an easter egg to be put
+/* This is Stanley. Stanley was given to me by /u/jimmybilly100. Stanley is an easter egg to be put
 * in this program where possible, because he is such a good boy */
 
 #[tokio::main]
