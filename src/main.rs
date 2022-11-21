@@ -1,6 +1,7 @@
 use tokio;
 use sqlx::Error;
 mod database;
+mod ui;
 
           //%@&@& @&&&&&&&&&&@@@@@@@@@@&@@@&@
          //#%&&&&%&&@&@&&&&&&@@&@&@@&&&&@@&&%&&
@@ -47,20 +48,19 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Error>{
-    let mut database = database::Database::new().await?;
+    let mut db = database::Database::new().await?;
 
-    database.setup().await?;
+    db.setup().await?;
 
-    database.add_task("This is a task").await?;
-    database.add_task("This is another task").await?;
+    db.add_task("This is a task").await?;
+    db.add_task("This is another task").await?;
 
-    let tasks = database.list_tasks().await?;
-
-    println!("There are {} tasks", tasks.len());
-
-    for task in tasks {
-      println!("Task: {} (ID: {})", task.description, task.id)
-    }
+    ui::display_state(ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal), &mut db)
+      .await?;
+    ui::display_state(ui::States::DisplayingTasks(ui::DisplayingTasksStates::Create), &mut db)
+      .await?;
+    ui::display_state(ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal), &mut db)
+      .await?;
 
     Ok(())
 }
