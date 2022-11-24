@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.6.1", features = ["runtime-tokio-rustls", "sqlite"] }
+tui = "0.19.0"
