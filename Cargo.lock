@@ -902,6 +902,7 @@ dependencies = [
 name = "tasklist"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "sqlx",
  "tokio",
  "tui",
