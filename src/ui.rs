@@ -13,7 +13,7 @@ use sqlx::Error;
 use tui::{
     backend::CrosstermBackend,
     symbols::block,
-    widgets::{self, Block, Borders},
+    widgets::{self, Block, Borders, ListState},
     Frame, Terminal, layout::Rect,
 };
 
@@ -37,7 +37,7 @@ pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     Ok(Terminal::new(backend)?)
 }
 
-pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>) {
+pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, selected: Option<ListState>) {
     let mut list_items = Vec::new();
 
     for task in tasks {
@@ -55,7 +55,10 @@ pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>
     let inner_area = block.inner(size);
 
     frame.render_widget(block, size);
-    frame.render_widget(list, inner_area);
+    match selected {
+        None => frame.render_widget(list, inner_area),
+        Some(mut state) => frame.render_stateful_widget(list, inner_area, &mut state)
+    }
 }
 
 pub fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
@@ -75,15 +78,17 @@ pub async fn display_tasks(
 ) -> Result<States, Error> {
     let tasks = db.list_tasks().await?;
 
-    terminal.draw(|frame| draw_tasks(&tasks, frame))?;
 
     loop {
+        let mut list_state = ListState::default();
+        terminal.draw(|frame| draw_tasks(&tasks, frame, Some(list_state.clone())))?;
         match read()? {
             Event::Key(event) => match event.code {
                 KeyCode::Char('n') => {
                     return Ok(States::DisplayingTasks(DisplayingTasksStates::Create))
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
+                KeyCode::Up => list_state.select(Some(0)),
                 _ => continue,
             },
             _ => continue,
@@ -102,13 +107,12 @@ pub async fn ask_for_tasks(
 
     loop {
         terminal.draw(|frame| {
-            draw_tasks(&prev_tasks, frame);
+            draw_tasks(&prev_tasks, frame, None);
 
 
             let block = Block::default().title("New Task").borders(Borders::ALL);
-            let text_widget = widgets::Paragraph::new(task.clone());
 
-            let width = 22;
+            let width = 42;
             let height = 3;
 
             let terminal_size = frame.size();
@@ -121,6 +125,11 @@ pub async fn ask_for_tasks(
             };
 
             let inner_area = block.inner(size);
+            let task_length = task.bytes().count();
+            let displayed_text = if task_length > inner_area.width.into() {
+                ("...".to_owned() + (task.clone().split_at(task_length - <u16 as Into<usize>>::into(inner_area.width - 3)).1))
+            } else { task.clone() };
+            let text_widget = widgets::Paragraph::new(displayed_text);
             frame.render_widget(block, size);
             frame.render_widget(text_widget, inner_area);
         })?;
