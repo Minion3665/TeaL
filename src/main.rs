@@ -1,54 +1,24 @@
-use sqlx::Error;
+use crossterm::{
+    event::EnableMouseCapture,
+    execute,
+    terminal::EnterAlternateScreen,
+};
+use eyre::Result;
+use ui::teardown;
+use std::io::stdout;
 use tokio;
+use tui::{backend::CrosstermBackend, Terminal};
 mod database;
 mod ui;
 mod sorting;
 
-//%@&@& @&&&&&&&&&&@@@@@@@@@@&@@@&@
-//#%&&&&%&&@&@&&&&&&@@&@&@@&&&&@@&&%&&
-//%%&&%###&&&&&&@&&&&&&&@&&&&&&&%&@@@@&%%&(
-//#%%%#(#*#%&//(%%%%&%&&&&&&&&&&&&&&/%%&@@&&&(&
-//#((%#/((#(   *(((#%%##%#%###/#%&&&&%/*(%&%(###&%&
-//#(##(/,*(#.  .*/#%%%#%%###/,  .../%%%/**(%&%###%#%&
-//##((/*/,((((#((#%%%##%%%#((*///#%%#%## /(&%&((#%%%%
-//((//**,(#/(##%%#%%%%#%%#%#%%##(%&%&%#.*/(%%(%/#%%
-/////*,.*#(/#(###(###%%%#%#%%%%%&&%&&#,////%##(##
-///***,,./%%//*****/%%%%#####%%&&&&%#(,(((//#####
-//./**,.*#.,*/*////*.##%%##%%&&&&&%##*.*/###(%%%#(
-//**,. ,#   .    ...*#%%%%%#%%#,(%#,.,**%((###%%#(
-///(,         *###&%&%%%* ((,,**/#%%%#%&%%##(
-//((*,.. ..,*/#%%%%%# *.#///((#%(%%%%&%#%#(,
-//*/.,. .. ,*(((#% * ,**/(##/(**#,#%%%%%(
-///.*,**,.,*/##*. , ,**/#(,,,*,**(#%%&%
-//((/(((**(##%, .#(/**(((*,,*(//(##%%&&%
-//(((#(#/(((##%##(//((/(///(((((###%%%&&&/
-//((#((#(/(((###%//((/////(/(((####%#%%&&&%
-///###((/((/((#%(/*////(((//(//((##%%%%&&&&%
-//(###(((/(((#///*/(((####*,,**/(##%%%%&&&&%.
-///######(**/*/(#(((#(##(((/////(((##%%&&&&&&
-//.,,,***//((((((/((/*****/((((##%%&&&&%
-//,,,,,,**/(///*,,,,,,,,,**//(###%%%&%#
-//*,,,,,,,*               **/((##%%###
-//,,,,,,,*                 /((#####(
-//,,****/                 *,*/((##(
-//,,****/                  **/((###
-//,,*///                  **/((###
-//,*///                  **//(#(
-//,,,*//                 ,*/((((
-//,,,,,*                 ,,*/((.
-//****//                 ,,*/((
-//***/////                 ,*/(((.
-///(//////                 ,*/((((/
-/////*/////                 *////(((
-/* This is Stanley. Stanley was given to me by /u/jimmybilly100. Stanley is an easter egg to be put
-* in this program where possible, because he is such a good boy */
-
 #[tokio::main]
-async fn main() {
-    run().await.unwrap()
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+    run().await
 }
 
-async fn run() -> Result<(), Error> {
+async fn run() -> Result<()> {
     let mut db = database::Database::new().await?;
 
     db.setup().await?;
@@ -56,21 +26,19 @@ async fn run() -> Result<(), Error> {
     db.add_task("This is a task").await?;
     db.add_task("This is another task").await?;
 
-    ui::display_state(
-        ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal),
-        &mut db,
-    )
-    .await?;
-    ui::display_state(
-        ui::States::DisplayingTasks(ui::DisplayingTasksStates::Create),
-        &mut db,
-    )
-    .await?;
-    ui::display_state(
-        ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal),
-        &mut db,
-    )
-    .await?;
+    let mut terminal = ui::setup()?;
 
-    Ok(())
+    let mut state = ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal);
+    loop {
+        state = ui::display_state(
+            state,
+            &mut terminal,
+            &mut db,
+        ).await?;
+        if state == ui::States::Quitting {
+            break;
+        }
+    }
+
+    teardown(&mut terminal)
 }
