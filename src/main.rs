@@ -10,6 +10,7 @@ use tokio;
 use tui::{backend::CrosstermBackend, Terminal};
 mod database;
 mod ui;
+mod sorting;
 
 #[tokio::main]
 async fn main() -> Result<()> {
