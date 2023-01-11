@@ -2,6 +2,7 @@ use sqlx::Error;
 use tokio;
 mod database;
 mod ui;
+mod sorting;
 
 //%@&@& @&&&&&&&&&&@@@@@@@@@@&@@@&@
 //#%&&&&%&&@&@&&&&&&@@&@&@@&&&&@@&&%&&

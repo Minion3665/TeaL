@@ -6,10 +6,11 @@ pub struct Database {
     connection: SqliteConnection,
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct Task {
     pub id: i64, // IMPORTANT: This begins from 1, *not* 0
     pub description: String,
+    pub complete: bool
 }
 
 impl Database {
@@ -20,18 +21,14 @@ impl Database {
     }
 
     pub async fn setup(&mut self) -> Result<SqliteQueryResult, Error> {
-        sqlx::query(
-            "CREATE TABLE tasks (
-            id integer PRIMARY KEY AUTOINCREMENT,
-            description text NOT NULL
-        )",
+        sqlx::query(include_str!("./create.sql"),
         )
         .execute(&mut self.connection)
         .await
     }
 
     pub async fn add_task(&mut self, task: &str) -> Result<SqliteQueryResult, Error> {
-        sqlx::query!("INSERT INTO tasks VALUES (null, ?)", task)
+        sqlx::query!("INSERT INTO tasks VALUES (null, ?, false)", task)
             .execute(&mut self.connection)
             .await
     }
