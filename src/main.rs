@@ -1,13 +1,9 @@
-use crossterm::{
-    event::EnableMouseCapture,
-    execute,
-    terminal::EnterAlternateScreen,
-};
+
 use eyre::Result;
 use ui::teardown;
-use std::io::stdout;
-use tokio;
-use tui::{backend::CrosstermBackend, Terminal};
+
+
+
 mod database;
 mod ui;
 mod sorting;

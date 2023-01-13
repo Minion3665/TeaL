@@ -6,7 +6,7 @@ pub fn search(term: &str, tasks: Vec<Task>) -> Vec<Task> {
     let matcher = SkimMatcherV2::default();
 
     let mut scored_tasks = tasks.into_iter()
-        .filter_map(|task| matcher.fuzzy_match(&task.description, term).and_then(|score| Some((task, score))))
+        .filter_map(|task| matcher.fuzzy_match(&task.description, term).map(|score| (task, score)))
         .collect::<Vec<(Task, i64)>>();
 
     scored_tasks.sort_by_key(|scored_task| scored_task.1);
@@ -15,7 +15,7 @@ pub fn search(term: &str, tasks: Vec<Task>) -> Vec<Task> {
 }
 
 pub fn alphabetical(tasks: Vec<Task>) -> Vec<Task> {
-    let mut tasks = tasks.clone();
+    let mut tasks = tasks;
     tasks.sort_by_key(|task| task.description.clone());
 
     tasks
@@ -27,7 +27,7 @@ pub struct CompletionFilterResult {
 }
 
 pub fn completion_filter(tasks: Vec<Task>) -> CompletionFilterResult {
-    let mut tasks = tasks.clone();
+    let mut tasks = tasks;
     let mut incomplete_tasks: Vec<Task> = Vec::default();
 
     tasks.retain(|task| {
@@ -41,4 +41,4 @@ pub fn completion_filter(tasks: Vec<Task>) -> CompletionFilterResult {
         complete: tasks,
         incomplete: incomplete_tasks
     }
-}
+} 

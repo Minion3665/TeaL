@@ -33,7 +33,7 @@ impl Database {
             .await
     }
 
-    pub async fn remove_task(&mut self, index: i32) -> Result<u64, Error> {
+    pub async fn remove_task(&mut self, index: i64) -> Result<u64, Error> {
         Ok(sqlx::query!("DELETE FROM tasks WHERE id = ?", index)
             .execute(&mut self.connection)
             .await?

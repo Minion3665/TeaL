@@ -1,20 +1,18 @@
 use eyre::Result;
-use std::io::{self, stdout, Stdout};
+use std::io::{stdout, Stdout};
 
 use crate::database::{self, Database, Task};
 use crossterm::{
     self,
-    event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent},
+    event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-    ExecutableCommand,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
 use sqlx::Error;
 use tui::{
     backend::CrosstermBackend,
-    symbols::block,
     widgets::{self, Block, Borders, ListState},
-    Frame, Terminal, layout::Rect,
+    Frame, Terminal, layout::Rect, style::{Style, Color, Modifier},
 };
 
 #[derive(PartialEq)]
@@ -37,7 +35,8 @@ pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     Ok(Terminal::new(backend)?)
 }
 
-pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, selected: Option<ListState>) {
+pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, selected: Option<usize>) {
+    let block = Block::default().title("Your tasks").borders(Borders::ALL);
     let mut list_items = Vec::new();
 
     for task in tasks {
@@ -47,18 +46,19 @@ pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>
         )))
     }
 
-    let list = widgets::List::new(list_items);
+    let list = widgets::List::new(list_items)
+        .highlight_style(
+            Style::default()
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(block);
 
     let size = frame.size();
-    let block = Block::default().title("Your tasks").borders(Borders::ALL);
 
-    let inner_area = block.inner(size);
-
-    frame.render_widget(block, size);
-    match selected {
-        None => frame.render_widget(list, inner_area),
-        Some(mut state) => frame.render_stateful_widget(list, inner_area, &mut state)
-    }
+    let mut state = ListState::default();
+    state.select(selected);
+    frame.render_stateful_widget(list, size, &mut state)
 }
 
 pub fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
@@ -76,19 +76,40 @@ pub async fn display_tasks(
     db: &mut database::Database,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
 ) -> Result<States, Error> {
-    let tasks = db.list_tasks().await?;
+    let mut tasks = db.list_tasks().await?;
 
-
+    let mut selected: Option<usize> = None;
     loop {
-        let mut list_state = ListState::default();
-        terminal.draw(|frame| draw_tasks(&tasks, frame, Some(list_state.clone())))?;
+        terminal.draw(|frame| draw_tasks(&tasks, frame, selected))?;
         match read()? {
             Event::Key(event) => match event.code {
                 KeyCode::Char('n') => {
                     return Ok(States::DisplayingTasks(DisplayingTasksStates::Create))
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
-                KeyCode::Up => list_state.select(Some(0)),
+                KeyCode::Char('j') | KeyCode::Down => selected = match selected {
+                    None => Some(0),
+                    Some(index) => if index + 1 >= tasks.len() { Some(0) } else { Some(index + 1) }
+                },                
+                KeyCode::Char('k') | KeyCode::Up => selected = match selected {
+                    None => Some(tasks.len() - 1),
+                    Some(0) => Some(tasks.len() - 1),
+                    Some(index) => Some(index - 1)
+                },
+                KeyCode::Char('d') => {
+                    match selected {
+                        None => continue,
+                        Some(index) => db.remove_task(tasks[index].id).await?
+                    };
+                    tasks = db.list_tasks().await?;
+                    selected = if tasks.len() == 0 {
+                        None
+                    } else if selected == Some(tasks.len()) {
+                        Some(tasks.len() - 1)
+                    } else {
+                        selected
+                    };
+                },
                 _ => continue,
             },
             _ => continue,
@@ -100,8 +121,8 @@ pub async fn ask_for_tasks(
     db: &mut database::Database,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
 ) -> Result<States, Error> {
-    let mut task = String::new();
-    let mut prev_tasks = db.list_tasks().await?;
+    let _task = String::new();
+    let prev_tasks = db.list_tasks().await?;
 
     let mut task = String::new();
 
@@ -125,9 +146,9 @@ pub async fn ask_for_tasks(
             };
 
             let inner_area = block.inner(size);
-            let task_length = task.bytes().count();
+            let task_length = task.len();
             let displayed_text = if task_length > inner_area.width.into() {
-                ("...".to_owned() + (task.clone().split_at(task_length - <u16 as Into<usize>>::into(inner_area.width - 3)).1))
+                "...".to_owned() + (task.clone().split_at(task_length - <u16 as Into<usize>>::into(inner_area.width - 3)).1)
             } else { task.clone() };
             let text_widget = widgets::Paragraph::new(displayed_text);
             frame.render_widget(block, size);
@@ -141,7 +162,7 @@ pub async fn ask_for_tasks(
                 KeyCode::Esc => return Ok(States::DisplayingTasks(DisplayingTasksStates::Normal)),
                 KeyCode::Backspace => {
                     task.pop();
-                    ()
+                    
                 }
                 _ => continue,
             },
