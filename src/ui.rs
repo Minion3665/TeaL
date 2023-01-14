@@ -35,7 +35,16 @@ pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     Ok(Terminal::new(backend)?)
 }
 
-pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, selected: Option<usize>) {
+/// Draw the command palette at the bottom of the screen, returning the remaining screen space
+fn draw_command_palette(frame: &mut Frame<CrosstermBackend<Stdout>>) -> Rect {
+    //frame.render_widget(widget, area)
+
+    let mut total_size = frame.size();
+    total_size.height -= 1;
+    total_size
+}
+
+fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, remaining_space: Rect, selected: Option<usize>) {
     let block = Block::default().title("Your tasks").borders(Borders::ALL);
     let mut list_items = Vec::new();
 
@@ -54,11 +63,9 @@ pub fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>
         )
         .block(block);
 
-    let size = frame.size();
-
     let mut state = ListState::default();
     state.select(selected);
-    frame.render_stateful_widget(list, size, &mut state)
+    frame.render_stateful_widget(list, remaining_space, &mut state)
 }
 
 pub fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
@@ -80,7 +87,10 @@ pub async fn display_tasks(
 
     let mut selected: Option<usize> = None;
     loop {
-        terminal.draw(|frame| draw_tasks(&tasks, frame, selected))?;
+        terminal.draw(|frame| {
+            let remaining_space = draw_command_palette(frame);
+            draw_tasks(&tasks, frame, remaining_space, selected)
+        })?;
         match read()? {
             Event::Key(event) => match event.code {
                 KeyCode::Char('n') => {
@@ -128,7 +138,8 @@ pub async fn ask_for_tasks(
 
     loop {
         terminal.draw(|frame| {
-            draw_tasks(&prev_tasks, frame, None);
+            let remaining_space = draw_command_palette(frame);
+            draw_tasks(&prev_tasks, frame, remaining_space, None);
 
 
             let block = Block::default().title("New Task").borders(Borders::ALL);
@@ -136,11 +147,9 @@ pub async fn ask_for_tasks(
             let width = 42;
             let height = 3;
 
-            let terminal_size = frame.size();
-
             let size = Rect {
-                x: (terminal_size.width - width) / 2,
-                y: (terminal_size.height - height) / 2,
+                x: (remaining_space.width - width) / 2,
+                y: (remaining_space.height - height) / 2,
                 width,
                 height
             };
