@@ -1,6 +1,6 @@
 
 use eyre::Result;
-use ui::teardown;
+use ui::{teardown, DisplayingTasksData};
 
 
 
@@ -24,7 +24,10 @@ async fn run() -> Result<()> {
 
     let mut terminal = ui::setup()?;
 
-    let mut state = ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal);
+    let mut state = ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal, DisplayingTasksData {
+        selected_task: None,
+        command_palette_text: "Welcome to TeaL! Press 'n' to add a task, 'd' to remove a task or 'h' for more help".to_owned(),
+    });
     loop {
         state = ui::display_state(
             state,

@@ -11,7 +11,7 @@ use crossterm::{
 use sqlx::Error;
 use tui::{
     backend::CrosstermBackend,
-    widgets::{self, Block, Borders, ListState},
+    widgets::{self, Block, Borders, ListState, Paragraph },
     Frame, Terminal, layout::Rect, style::{Style, Color, Modifier},
 };
 
@@ -22,9 +22,15 @@ pub enum DisplayingTasksStates {
 }
 
 #[derive(PartialEq)]
+pub struct DisplayingTasksData {
+    pub selected_task: Option<usize>,
+    pub command_palette_text: String,
+}
+
+#[derive(PartialEq)]
 pub enum States {
     Quitting,
-    DisplayingTasks(DisplayingTasksStates),
+    DisplayingTasks(DisplayingTasksStates, DisplayingTasksData),
 }
 
 pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -36,10 +42,13 @@ pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 }
 
 /// Draw the command palette at the bottom of the screen, returning the remaining screen space
-fn draw_command_palette(frame: &mut Frame<CrosstermBackend<Stdout>>) -> Rect {
-    //frame.render_widget(widget, area)
-
+fn draw_command_palette(frame: &mut Frame<CrosstermBackend<Stdout>>, state_data: &DisplayingTasksData) -> Rect {
     let mut total_size = frame.size();
+    
+    let widget = Paragraph::new(state_data.command_palette_text.clone());
+    let area = Rect { x: 0, y: total_size.height - 1, width: total_size.width, height: 1 };
+    frame.render_widget(widget, area);
+
     total_size.height -= 1;
     total_size
 }
@@ -59,6 +68,7 @@ fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, re
         .highlight_style(
             Style::default()
                 .bg(Color::Cyan)
+                .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         )
         .block(block);
@@ -82,42 +92,43 @@ pub fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()>
 pub async fn display_tasks(
     db: &mut database::Database,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    mut state_data: DisplayingTasksData,
 ) -> Result<States, Error> {
     let mut tasks = db.list_tasks().await?;
 
-    let mut selected: Option<usize> = None;
     loop {
         terminal.draw(|frame| {
-            let remaining_space = draw_command_palette(frame);
-            draw_tasks(&tasks, frame, remaining_space, selected)
+            let remaining_space = draw_command_palette(frame, &state_data);
+            draw_tasks(&tasks, frame, remaining_space, state_data.selected_task)
         })?;
         match read()? {
             Event::Key(event) => match event.code {
                 KeyCode::Char('n') => {
-                    return Ok(States::DisplayingTasks(DisplayingTasksStates::Create))
+                    state_data.command_palette_text = "Press <ENTER> to finish adding the task, or <ESCAPE> to cancel".to_owned();
+                    return Ok(States::DisplayingTasks(DisplayingTasksStates::Create, state_data))
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
-                KeyCode::Char('j') | KeyCode::Down => selected = match selected {
+                KeyCode::Char('j') | KeyCode::Down => state_data.selected_task = match state_data.selected_task {
                     None => Some(0),
                     Some(index) => if index + 1 >= tasks.len() { Some(0) } else { Some(index + 1) }
                 },                
-                KeyCode::Char('k') | KeyCode::Up => selected = match selected {
+                KeyCode::Char('k') | KeyCode::Up => state_data.selected_task = match state_data.selected_task {
                     None => Some(tasks.len() - 1),
                     Some(0) => Some(tasks.len() - 1),
                     Some(index) => Some(index - 1)
                 },
                 KeyCode::Char('d') => {
-                    match selected {
+                    match state_data.selected_task {
                         None => continue,
                         Some(index) => db.remove_task(tasks[index].id).await?
                     };
                     tasks = db.list_tasks().await?;
-                    selected = if tasks.len() == 0 {
+                    state_data.selected_task = if tasks.len() == 0 {
                         None
-                    } else if selected == Some(tasks.len()) {
+                    } else if state_data.selected_task == Some(tasks.len()) {
                         Some(tasks.len() - 1)
                     } else {
-                        selected
+                        state_data.selected_task
                     };
                 },
                 _ => continue,
@@ -130,6 +141,7 @@ pub async fn display_tasks(
 pub async fn ask_for_tasks(
     db: &mut database::Database,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    mut state_data: DisplayingTasksData,
 ) -> Result<States, Error> {
     let _task = String::new();
     let prev_tasks = db.list_tasks().await?;
@@ -138,7 +150,7 @@ pub async fn ask_for_tasks(
 
     loop {
         terminal.draw(|frame| {
-            let remaining_space = draw_command_palette(frame);
+            let remaining_space = draw_command_palette(frame, &state_data);
             draw_tasks(&prev_tasks, frame, remaining_space, None);
 
 
@@ -166,9 +178,15 @@ pub async fn ask_for_tasks(
 
         match read()? {
             Event::Key(event) => match event.code {
-                KeyCode::Enter => break,
+                KeyCode::Enter => {
+                    state_data.command_palette_text = "".to_owned();
+                    break
+                },
                 KeyCode::Char(char) => task.push(char),
-                KeyCode::Esc => return Ok(States::DisplayingTasks(DisplayingTasksStates::Normal)),
+                KeyCode::Esc => {
+                    state_data.command_palette_text = "".to_owned();
+                    return Ok(States::DisplayingTasks(DisplayingTasksStates::Normal, state_data))
+                },
                 KeyCode::Backspace => {
                     task.pop();
                     
@@ -181,7 +199,7 @@ pub async fn ask_for_tasks(
 
     db.add_task(&task).await?;
 
-    Ok(States::DisplayingTasks(DisplayingTasksStates::Normal))
+    Ok(States::DisplayingTasks(DisplayingTasksStates::Normal, state_data))
 }
 
 pub async fn display_state(
@@ -190,11 +208,11 @@ pub async fn display_state(
     db: &mut Database,
 ) -> Result<States> {
     match state {
-        States::DisplayingTasks(DisplayingTasksStates::Normal) => {
-            Ok(display_tasks(db, terminal).await?)
+        States::DisplayingTasks(DisplayingTasksStates::Normal, state_data) => {
+            Ok(display_tasks(db, terminal, state_data).await?)
         }
-        States::DisplayingTasks(DisplayingTasksStates::Create) => {
-            Ok(ask_for_tasks(db, terminal).await?)
+        States::DisplayingTasks(DisplayingTasksStates::Create, state_data) => {
+            Ok(ask_for_tasks(db, terminal, state_data).await?)
         }
         States::Quitting => panic!("display_state called when the application is already quitting"),
     }
