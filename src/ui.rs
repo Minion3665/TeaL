@@ -1,10 +1,10 @@
 use eyre::Result;
-use std::io::{stdout, Stdout};
+use std::{io::{stdout, Stdout}, char};
 
-use crate::database::{self, Database, Task};
+use crate::{database::{self, Database, Task}, sorting::search};
 use crossterm::{
     self,
-    event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, self},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,12 +19,14 @@ use tui::{
 pub enum DisplayingTasksStates {
     Normal,
     Create,
+    Search,
 }
 
 #[derive(PartialEq)]
 pub struct DisplayingTasksData {
     pub selected_task: Option<usize>,
     pub command_palette_text: String,
+    pub search_string: Option<String>,
 }
 
 #[derive(PartialEq)]
@@ -53,11 +55,16 @@ fn draw_command_palette(frame: &mut Frame<CrosstermBackend<Stdout>>, state_data:
     total_size
 }
 
-fn draw_tasks(tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, remaining_space: Rect, selected: Option<usize>) {
+fn draw_tasks(mut tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, remaining_space: Rect, selected: Option<usize>, state_data: &DisplayingTasksData) {
     let block = Block::default().title("Your tasks").borders(Borders::ALL);
     let mut list_items = Vec::new();
 
-    for task in tasks {
+    let mut owned_tasks = tasks.to_owned();
+
+    if let Some(ref query) = state_data.search_string {
+        owned_tasks = search(&query, owned_tasks);
+    }
+    for task in owned_tasks {
         list_items.push(widgets::ListItem::new(format!(
             "[{}]: {}",
             task.id, task.description
@@ -99,12 +106,11 @@ pub async fn display_tasks(
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
-            draw_tasks(&tasks, frame, remaining_space, state_data.selected_task)
+            draw_tasks(&tasks, frame, remaining_space, state_data.selected_task, &state_data)
         })?;
         match read()? {
             Event::Key(event) => match event.code {
                 KeyCode::Char('n') => {
-                    state_data.command_palette_text = "Press <ENTER> to finish adding the task, or <ESCAPE> to cancel".to_owned();
                     return Ok(States::DisplayingTasks(DisplayingTasksStates::Create, state_data))
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
@@ -131,6 +137,9 @@ pub async fn display_tasks(
                         state_data.selected_task
                     };
                 },
+                KeyCode::Char('/') => {
+                    return Ok(States::DisplayingTasks(DisplayingTasksStates::Search, state_data));
+                }
                 _ => continue,
             },
             _ => continue,
@@ -138,20 +147,53 @@ pub async fn display_tasks(
     }
 }
 
+pub async fn search_tasks(
+    db: &mut database::Database,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    mut state_data: DisplayingTasksData,
+) -> Result<States> {
+    let tasks = db.list_tasks().await?;
+
+    state_data.command_palette_text = String::new();
+
+    loop {
+        state_data.search_string = Some(state_data.command_palette_text.clone());
+        terminal.draw(|frame| {
+            let remaining_space = draw_command_palette(frame, &state_data);
+            draw_tasks(&tasks, frame, remaining_space, None, &state_data);
+        })?;
+
+        match read()? {
+            Event::Key(event) => match event.code {
+                KeyCode::Enter => break,
+                KeyCode::Char(char) => state_data.command_palette_text.push(char),
+                KeyCode::Esc => {
+                    state_data.command_palette_text = "".to_owned();
+                },
+                KeyCode::Backspace => {state_data.command_palette_text.pop(); continue },
+                _ => continue
+            },
+            _ => continue
+        }
+    }
+
+    Ok(States::DisplayingTasks(DisplayingTasksStates::Normal, state_data))
+}
+
 pub async fn ask_for_tasks(
     db: &mut database::Database,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     mut state_data: DisplayingTasksData,
 ) -> Result<States, Error> {
-    let _task = String::new();
     let prev_tasks = db.list_tasks().await?;
 
     let mut task = String::new();
 
+    state_data.command_palette_text = "Press <ENTER> to finish adding the task, or <ESCAPE> to cancel".to_owned();
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
-            draw_tasks(&prev_tasks, frame, remaining_space, None);
+            draw_tasks(&prev_tasks, frame, remaining_space, None, &state_data);
 
 
             let block = Block::default().title("New Task").borders(Borders::ALL);
@@ -213,6 +255,9 @@ pub async fn display_state(
         }
         States::DisplayingTasks(DisplayingTasksStates::Create, state_data) => {
             Ok(ask_for_tasks(db, terminal, state_data).await?)
+        }
+        States::DisplayingTasks(DisplayingTasksStates::Search, state_data) => {
+            Ok(search_tasks(db, terminal, state_data).await?)
         }
         States::Quitting => panic!("display_state called when the application is already quitting"),
     }

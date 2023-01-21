@@ -27,6 +27,7 @@ async fn run() -> Result<()> {
     let mut state = ui::States::DisplayingTasks(ui::DisplayingTasksStates::Normal, DisplayingTasksData {
         selected_task: None,
         command_palette_text: "Welcome to TeaL! Press 'n' to add a task, 'd' to remove a task or 'h' for more help".to_owned(),
+        search_string: None,
     });
     loop {
         state = ui::display_state(
