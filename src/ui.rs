@@ -169,6 +169,8 @@ pub async fn search_tasks(
                 KeyCode::Char(char) => state_data.command_palette_text.push(char),
                 KeyCode::Esc => {
                     state_data.command_palette_text = "".to_owned();
+                    state_data.search_string = None;
+                    break
                 },
                 KeyCode::Backspace => {state_data.command_palette_text.pop(); continue },
                 _ => continue
