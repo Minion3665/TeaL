@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 
 use crate::database::Task;
@@ -9,7 +11,7 @@ pub fn search(term: &str, tasks: Vec<Task>) -> Vec<Task> {
         .filter_map(|task| matcher.fuzzy_match(&task.description, term).map(|score| (task, score)))
         .collect::<Vec<(Task, i64)>>();
 
-    scored_tasks.sort_by_key(|scored_task| scored_task.1);
+    scored_tasks.sort_by_key(|scored_task| Reverse(scored_task.1));
 
     scored_tasks.into_iter().map(|scored_task| scored_task.0).collect()
 }
