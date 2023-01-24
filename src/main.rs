@@ -1,12 +1,9 @@
-
 use eyre::Result;
 use ui::{teardown, DisplayingTasksData};
 
-
-
 mod database;
-mod ui;
 mod sorting;
+mod ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -30,11 +27,7 @@ async fn run() -> Result<()> {
         search_string: None,
     });
     loop {
-        state = ui::display_state(
-            state,
-            &mut terminal,
-            &mut db,
-        ).await?;
+        state = ui::display_state(state, &mut terminal, &mut db).await?;
         if state == ui::States::Quitting {
             break;
         }

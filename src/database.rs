@@ -6,11 +6,11 @@ pub struct Database {
     connection: SqliteConnection,
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct Task {
     pub id: i64, // IMPORTANT: This begins from 1, *not* 0
     pub description: String,
-    pub complete: bool
+    pub complete: bool,
 }
 
 impl Database {
@@ -21,10 +21,9 @@ impl Database {
     }
 
     pub async fn setup(&mut self) -> Result<SqliteQueryResult, Error> {
-        sqlx::query(include_str!("./create.sql"),
-        )
-        .execute(&mut self.connection)
-        .await
+        sqlx::query(include_str!("./create.sql"))
+            .execute(&mut self.connection)
+            .await
     }
 
     pub async fn add_task(&mut self, task: &str) -> Result<SqliteQueryResult, Error> {
