@@ -1,18 +1,23 @@
 use eyre::Result;
-use std::{io::{stdout, Stdout}, char};
+use std::io::{stdout, Stdout};
 
-use crate::{database::{self, Database, Task}, sorting::search};
+use crate::{
+    database::{self, Database, Task},
+    sorting::search,
+};
 use crossterm::{
     self,
-    event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, self},
+    event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
 use sqlx::Error;
 use tui::{
     backend::CrosstermBackend,
-    widgets::{self, Block, Borders, ListState, Paragraph },
-    Frame, Terminal, layout::Rect, style::{Style, Color, Modifier},
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    widgets::{self, Block, Borders, ListState, Paragraph},
+    Frame, Terminal,
 };
 
 #[derive(PartialEq)]
@@ -44,18 +49,32 @@ pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 }
 
 /// Draw the command palette at the bottom of the screen, returning the remaining screen space
-fn draw_command_palette(frame: &mut Frame<CrosstermBackend<Stdout>>, state_data: &DisplayingTasksData) -> Rect {
+fn draw_command_palette(
+    frame: &mut Frame<CrosstermBackend<Stdout>>,
+    state_data: &DisplayingTasksData,
+) -> Rect {
     let mut total_size = frame.size();
-    
+
     let widget = Paragraph::new(state_data.command_palette_text.clone());
-    let area = Rect { x: 0, y: total_size.height - 1, width: total_size.width, height: 1 };
+    let area = Rect {
+        x: 0,
+        y: total_size.height - 1,
+        width: total_size.width,
+        height: 1,
+    };
     frame.render_widget(widget, area);
 
     total_size.height -= 1;
     total_size
 }
 
-fn draw_tasks(mut tasks: &Vec<Task>, frame: &mut Frame<CrosstermBackend<Stdout>>, remaining_space: Rect, selected: Option<usize>, state_data: &DisplayingTasksData) {
+fn draw_tasks(
+    tasks: &Vec<Task>,
+    frame: &mut Frame<CrosstermBackend<Stdout>>,
+    remaining_space: Rect,
+    selected: Option<usize>,
+    state_data: &DisplayingTasksData,
+) {
     let block = Block::default().title("Your tasks").borders(Borders::ALL);
     let mut list_items = Vec::new();
 
@@ -106,27 +125,46 @@ pub async fn display_tasks(
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
-            draw_tasks(&tasks, frame, remaining_space, state_data.selected_task, &state_data)
+            draw_tasks(
+                &tasks,
+                frame,
+                remaining_space,
+                state_data.selected_task,
+                &state_data,
+            )
         })?;
         match read()? {
             Event::Key(event) => match event.code {
                 KeyCode::Char('n') => {
-                    return Ok(States::DisplayingTasks(DisplayingTasksStates::Create, state_data))
+                    return Ok(States::DisplayingTasks(
+                        DisplayingTasksStates::Create,
+                        state_data,
+                    ))
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
-                KeyCode::Char('j') | KeyCode::Down => state_data.selected_task = match state_data.selected_task {
-                    None => Some(0),
-                    Some(index) => if index + 1 >= tasks.len() { Some(0) } else { Some(index + 1) }
-                },                
-                KeyCode::Char('k') | KeyCode::Up => state_data.selected_task = match state_data.selected_task {
-                    None => Some(tasks.len() - 1),
-                    Some(0) => Some(tasks.len() - 1),
-                    Some(index) => Some(index - 1)
-                },
+                KeyCode::Char('j') | KeyCode::Down => {
+                    state_data.selected_task = match state_data.selected_task {
+                        None => Some(0),
+                        Some(index) => {
+                            if index + 1 >= tasks.len() {
+                                Some(0)
+                            } else {
+                                Some(index + 1)
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    state_data.selected_task = match state_data.selected_task {
+                        None => Some(tasks.len() - 1),
+                        Some(0) => Some(tasks.len() - 1),
+                        Some(index) => Some(index - 1),
+                    }
+                }
                 KeyCode::Char('d') => {
                     match state_data.selected_task {
                         None => continue,
-                        Some(index) => db.remove_task(tasks[index].id).await?
+                        Some(index) => db.remove_task(tasks[index].id).await?,
                     };
                     tasks = db.list_tasks().await?;
                     state_data.selected_task = if tasks.len() == 0 {
@@ -136,9 +174,12 @@ pub async fn display_tasks(
                     } else {
                         state_data.selected_task
                     };
-                },
+                }
                 KeyCode::Char('/') => {
-                    return Ok(States::DisplayingTasks(DisplayingTasksStates::Search, state_data));
+                    return Ok(States::DisplayingTasks(
+                        DisplayingTasksStates::Search,
+                        state_data,
+                    ));
                 }
                 _ => continue,
             },
@@ -154,10 +195,12 @@ pub async fn search_tasks(
 ) -> Result<States> {
     let tasks = db.list_tasks().await?;
 
-    state_data.command_palette_text = String::new();
+    state_data.command_palette_text = "/".to_owned();
 
     loop {
-        state_data.search_string = Some(state_data.command_palette_text.clone());
+        state_data.search_string = Some(
+            state_data.command_palette_text[1..state_data.command_palette_text.len()].to_owned(),
+        );
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
             draw_tasks(&tasks, frame, remaining_space, None, &state_data);
@@ -170,16 +213,24 @@ pub async fn search_tasks(
                 KeyCode::Esc => {
                     state_data.command_palette_text = "".to_owned();
                     state_data.search_string = None;
-                    break
-                },
-                KeyCode::Backspace => {state_data.command_palette_text.pop(); continue },
-                _ => continue
+                    break;
+                }
+                KeyCode::Backspace => {
+                    if state_data.command_palette_text.len() > 1 {
+                        state_data.command_palette_text.pop();
+                    }
+                    continue;
+                }
+                _ => continue,
             },
-            _ => continue
+            _ => continue,
         }
     }
 
-    Ok(States::DisplayingTasks(DisplayingTasksStates::Normal, state_data))
+    Ok(States::DisplayingTasks(
+        DisplayingTasksStates::Normal,
+        state_data,
+    ))
 }
 
 pub async fn ask_for_tasks(
@@ -191,12 +242,12 @@ pub async fn ask_for_tasks(
 
     let mut task = String::new();
 
-    state_data.command_palette_text = "Press <ENTER> to finish adding the task, or <ESCAPE> to cancel".to_owned();
+    state_data.command_palette_text =
+        "Press <ENTER> to finish adding the task, or <ESCAPE> to cancel".to_owned();
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
             draw_tasks(&prev_tasks, frame, remaining_space, None, &state_data);
-
 
             let block = Block::default().title("New Task").borders(Borders::ALL);
 
@@ -207,14 +258,20 @@ pub async fn ask_for_tasks(
                 x: (remaining_space.width - width) / 2,
                 y: (remaining_space.height - height) / 2,
                 width,
-                height
+                height,
             };
 
             let inner_area = block.inner(size);
             let task_length = task.len();
             let displayed_text = if task_length > inner_area.width.into() {
-                "...".to_owned() + (task.clone().split_at(task_length - <u16 as Into<usize>>::into(inner_area.width - 3)).1)
-            } else { task.clone() };
+                "...".to_owned()
+                    + (task
+                        .clone()
+                        .split_at(task_length - <u16 as Into<usize>>::into(inner_area.width - 3))
+                        .1)
+            } else {
+                task.clone()
+            };
             let text_widget = widgets::Paragraph::new(displayed_text);
             frame.render_widget(block, size);
             frame.render_widget(text_widget, inner_area);
@@ -224,16 +281,18 @@ pub async fn ask_for_tasks(
             Event::Key(event) => match event.code {
                 KeyCode::Enter => {
                     state_data.command_palette_text = "".to_owned();
-                    break
-                },
+                    break;
+                }
                 KeyCode::Char(char) => task.push(char),
                 KeyCode::Esc => {
                     state_data.command_palette_text = "".to_owned();
-                    return Ok(States::DisplayingTasks(DisplayingTasksStates::Normal, state_data))
-                },
+                    return Ok(States::DisplayingTasks(
+                        DisplayingTasksStates::Normal,
+                        state_data,
+                    ));
+                }
                 KeyCode::Backspace => {
                     task.pop();
-                    
                 }
                 _ => continue,
             },
@@ -243,7 +302,10 @@ pub async fn ask_for_tasks(
 
     db.add_task(&task).await?;
 
-    Ok(States::DisplayingTasks(DisplayingTasksStates::Normal, state_data))
+    Ok(States::DisplayingTasks(
+        DisplayingTasksStates::Normal,
+        state_data,
+    ))
 }
 
 pub async fn display_state(
