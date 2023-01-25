@@ -29,7 +29,7 @@ pub enum DisplayingTasksStates {
 
 #[derive(PartialEq)]
 pub struct DisplayingTasksData {
-    pub selected_task: Option<usize>,
+    pub selected_task: Option<i64>,
     pub command_palette_text: String,
     pub search_string: Option<String>,
 }
@@ -46,6 +46,20 @@ pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     execute!(&mut stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     Ok(Terminal::new(backend)?)
+}
+
+/// Provided a list of tasks and a task ID, do a linear search to find a task which has the correct
+/// ID. As IDs should be unique this is guaranteed to find all tasks with a given ID.
+fn task_index_from_id(tasks: &Vec<Task>, id: Option<i64>) -> Option<usize> {
+    for (index, task) in tasks.into_iter().enumerate() {
+        if let Some(task_id) = id {
+            if task.id == task_id {
+                return Some(index);
+            }
+        }
+    }
+
+    None
 }
 
 /// Draw the command palette at the bottom of the screen, returning the remaining screen space
@@ -68,22 +82,36 @@ fn draw_command_palette(
     total_size
 }
 
+fn filter_tasks(tasks: &Vec<Task>, state_data: &DisplayingTasksData) -> Vec<Task> {
+    let mut filtered_tasks = tasks.to_owned();
+
+    if let Some(ref query) = state_data.search_string {
+        filtered_tasks = search(&query, filtered_tasks);
+    }
+
+    filtered_tasks
+}
+
 fn draw_tasks(
     tasks: &Vec<Task>,
     frame: &mut Frame<CrosstermBackend<Stdout>>,
     remaining_space: Rect,
-    selected: Option<usize>,
+    selected: Option<i64>,
     state_data: &DisplayingTasksData,
+    already_filtered: bool,
 ) {
     let block = Block::default().title("Your tasks").borders(Borders::ALL);
     let mut list_items = Vec::new();
 
-    let mut owned_tasks = tasks.to_owned();
-
-    if let Some(ref query) = state_data.search_string {
-        owned_tasks = search(&query, owned_tasks);
+    let filtered_tasks;
+    let owned_filtered_tasks;
+    if already_filtered {
+        filtered_tasks = tasks;
+    } else {
+        owned_filtered_tasks = filter_tasks(tasks, state_data);
+        filtered_tasks = &owned_filtered_tasks;
     }
-    for task in owned_tasks {
+    for task in filtered_tasks {
         list_items.push(widgets::ListItem::new(format!(
             "[{}]: {}",
             task.id, task.description
@@ -100,7 +128,9 @@ fn draw_tasks(
         .block(block);
 
     let mut state = ListState::default();
-    state.select(selected);
+    if let Some(task_id) = selected {
+        state.select(task_index_from_id(filtered_tasks, Some(task_id)));
+    }
     frame.render_stateful_widget(list, remaining_space, &mut state)
 }
 
@@ -120,17 +150,18 @@ pub async fn display_tasks(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     mut state_data: DisplayingTasksData,
 ) -> Result<States, Error> {
-    let mut tasks = db.list_tasks().await?;
+    let mut filtered_tasks = filter_tasks(&db.list_tasks().await?, &state_data);
 
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
             draw_tasks(
-                &tasks,
+                &filtered_tasks,
                 frame,
                 remaining_space,
                 state_data.selected_task,
                 &state_data,
+                true,
             )
         })?;
         match read()? {
@@ -143,36 +174,43 @@ pub async fn display_tasks(
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
                 KeyCode::Char('j') | KeyCode::Down => {
-                    state_data.selected_task = match state_data.selected_task {
-                        None => Some(0),
-                        Some(index) => {
-                            if index + 1 >= tasks.len() {
-                                Some(0)
-                            } else {
-                                Some(index + 1)
+                    if filtered_tasks.len() < 1 { continue; }
+                    state_data.selected_task =
+                        match task_index_from_id(&filtered_tasks, state_data.selected_task) {
+                            None => Some(filtered_tasks[0].id),
+                            Some(index) => {
+                                if index + 1 >= filtered_tasks.len() {
+                                    Some(filtered_tasks[0].id)
+                                } else {
+                                    Some(filtered_tasks[index + 1].id)
+                                }
                             }
                         }
-                    }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    state_data.selected_task = match state_data.selected_task {
-                        None => Some(tasks.len() - 1),
-                        Some(0) => Some(tasks.len() - 1),
-                        Some(index) => Some(index - 1),
-                    }
+                    if filtered_tasks.len() < 1 { continue; }
+                    state_data.selected_task =
+                        match task_index_from_id(&filtered_tasks, state_data.selected_task) {
+                            None => Some(filtered_tasks[filtered_tasks.len() - 1].id),
+                            Some(0) => Some(filtered_tasks[filtered_tasks.len() - 1].id),
+                            Some(index) => Some(filtered_tasks[index - 1].id),
+                        }
                 }
                 KeyCode::Char('d') => {
-                    match state_data.selected_task {
+                    let removed_task_index = task_index_from_id(&filtered_tasks, state_data.selected_task);
+                    match removed_task_index {
                         None => continue,
-                        Some(index) => db.remove_task(tasks[index].id).await?,
-                    };
-                    tasks = db.list_tasks().await?;
-                    state_data.selected_task = if tasks.len() == 0 {
-                        None
-                    } else if state_data.selected_task == Some(tasks.len()) {
-                        Some(tasks.len() - 1)
-                    } else {
-                        state_data.selected_task
+                        Some(index) => {
+                            db.remove_task(filtered_tasks[index].id).await?;
+                            filtered_tasks = filter_tasks(&db.list_tasks().await?, &state_data);
+                            state_data.selected_task = if filtered_tasks.len() == 0 {
+                                None
+                            } else if index == filtered_tasks.len() {
+                                Some(filtered_tasks[filtered_tasks.len() - 1].id)
+                            } else {
+                                Some(filtered_tasks[index].id)
+                            };
+                        }
                     };
                 }
                 KeyCode::Char('/') => {
@@ -203,7 +241,11 @@ pub async fn search_tasks(
         );
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
-            draw_tasks(&tasks, frame, remaining_space, None, &state_data);
+            draw_tasks(&tasks, frame, remaining_space, state_data.selected_task, &state_data, false);
+
+            if let Ok(cursor_x) = state_data.command_palette_text.len().try_into() {
+                frame.set_cursor(cursor_x, frame.size().height - 1);
+            }
         })?;
 
         match read()? {
@@ -227,6 +269,13 @@ pub async fn search_tasks(
         }
     }
 
+    if let Some(search_string) = &state_data.search_string {
+        if search_string.len() == 0 {
+            state_data.search_string = None;
+            state_data.command_palette_text = "".to_owned();
+        }
+    }
+
     Ok(States::DisplayingTasks(
         DisplayingTasksStates::Normal,
         state_data,
@@ -247,34 +296,42 @@ pub async fn ask_for_tasks(
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
-            draw_tasks(&prev_tasks, frame, remaining_space, None, &state_data);
+            draw_tasks(&prev_tasks, frame, remaining_space, None, &state_data, false);
 
             let block = Block::default().title("New Task").borders(Borders::ALL);
 
             let width = 42;
             let height = 3;
 
+            let x = (remaining_space.width - width) / 2;
+            let y = (remaining_space.height - height) / 2;
+
             let size = Rect {
-                x: (remaining_space.width - width) / 2,
-                y: (remaining_space.height - height) / 2,
+                x,
+                y,
                 width,
                 height,
             };
 
             let inner_area = block.inner(size);
             let task_length = task.len();
-            let displayed_text = if task_length > inner_area.width.into() {
+            let displayed_text = if task_length + 1 > inner_area.width.into() {
                 "...".to_owned()
                     + (task
                         .clone()
-                        .split_at(task_length - <u16 as Into<usize>>::into(inner_area.width - 3))
+                        .split_at(task_length - <u16 as Into<usize>>::into(inner_area.width - 4))
                         .1)
             } else {
                 task.clone()
             };
+            if let Ok(text_length) = <usize as TryInto<u16>>::try_into(displayed_text.len()) {
+                frame.set_cursor(x + text_length + 1, y + 1);
+            }
+
             let text_widget = widgets::Paragraph::new(displayed_text);
             frame.render_widget(block, size);
             frame.render_widget(text_widget, inner_area);
+
         })?;
 
         match read()? {
@@ -300,7 +357,8 @@ pub async fn ask_for_tasks(
         }
     }
 
-    db.add_task(&task).await?;
+    let new_task = db.add_task(&task).await?;
+    state_data.selected_task = Some(new_task.id);
 
     Ok(States::DisplayingTasks(
         DisplayingTasksStates::Normal,

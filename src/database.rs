@@ -26,10 +26,14 @@ impl Database {
             .await
     }
 
-    pub async fn add_task(&mut self, task: &str) -> Result<SqliteQueryResult, Error> {
-        sqlx::query!("INSERT INTO tasks VALUES (null, ?, false)", task)
-            .execute(&mut self.connection)
-            .await
+    pub async fn add_task(&mut self, task: &str) -> Result<Task, Error> {
+        sqlx::query_as!(
+            Task,
+            "INSERT INTO tasks VALUES (null, ?, false) RETURNING id, description as 'description!', complete",
+            task
+        )
+        .fetch_one(&mut self.connection)
+        .await
     }
 
     pub async fn remove_task(&mut self, index: i64) -> Result<u64, Error> {
