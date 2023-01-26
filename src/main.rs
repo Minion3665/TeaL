@@ -16,8 +16,11 @@ async fn run() -> Result<()> {
 
     db.setup().await?;
 
-    db.add_task("This is a task").await?;
-    db.add_task("This is another task").await?;
+    db.add_task("This is a task", None).await?;
+    let task2 = db.add_task("This is another task", None).await?;
+    db.add_task("This is child task", Some(&task2)).await?;
+    let task2_child2 = db.add_task("This is another child task", Some(&task2)).await?; 
+    db.add_task("This is grandchild task", Some(&task2_child2)).await?;
 
     let mut terminal = ui::setup()?;
 

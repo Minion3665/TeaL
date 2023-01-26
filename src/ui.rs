@@ -17,7 +17,7 @@ use tui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     widgets::{self, Block, Borders, ListState, Paragraph},
-    Frame, Terminal,
+    Frame, Terminal, text::{Text, Span, Spans},
 };
 
 #[derive(PartialEq)]
@@ -112,10 +112,18 @@ fn draw_tasks(
         filtered_tasks = &owned_filtered_tasks;
     }
     for task in filtered_tasks {
-        list_items.push(widgets::ListItem::new(format!(
+        let mut text_parts = vec![Span::from(format!(
             "[{}]: {}",
             task.id, task.description
-        )))
+        ))];
+
+        if let Some(parent_id) = task.parent {
+            text_parts.push(Span::styled(format!(
+                " (child of task {})",
+                parent_id
+            ), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)))
+        }
+        list_items.push(widgets::ListItem::new(Spans::from(text_parts)));
     }
 
     let list = widgets::List::new(list_items)
@@ -150,7 +158,10 @@ pub async fn display_tasks(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     mut state_data: DisplayingTasksData,
 ) -> Result<States, Error> {
-    let mut filtered_tasks = filter_tasks(&db.list_tasks().await?, &state_data);
+    let mut filtered_tasks = filter_tasks(
+        &db.list_tasks(state_data.search_string.is_some()).await?,
+        &state_data,
+    );
 
     loop {
         terminal.draw(|frame| {
@@ -174,7 +185,9 @@ pub async fn display_tasks(
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if filtered_tasks.len() < 1 { continue; }
+                    if filtered_tasks.len() < 1 {
+                        continue;
+                    }
                     state_data.selected_task =
                         match task_index_from_id(&filtered_tasks, state_data.selected_task) {
                             None => Some(filtered_tasks[0].id),
@@ -188,7 +201,9 @@ pub async fn display_tasks(
                         }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    if filtered_tasks.len() < 1 { continue; }
+                    if filtered_tasks.len() < 1 {
+                        continue;
+                    }
                     state_data.selected_task =
                         match task_index_from_id(&filtered_tasks, state_data.selected_task) {
                             None => Some(filtered_tasks[filtered_tasks.len() - 1].id),
@@ -197,12 +212,16 @@ pub async fn display_tasks(
                         }
                 }
                 KeyCode::Char('d') => {
-                    let removed_task_index = task_index_from_id(&filtered_tasks, state_data.selected_task);
+                    let removed_task_index =
+                        task_index_from_id(&filtered_tasks, state_data.selected_task);
                     match removed_task_index {
                         None => continue,
                         Some(index) => {
                             db.remove_task(filtered_tasks[index].id).await?;
-                            filtered_tasks = filter_tasks(&db.list_tasks().await?, &state_data);
+                            filtered_tasks = filter_tasks(
+                                &db.list_tasks(state_data.search_string.is_some()).await?,
+                                &state_data,
+                            );
                             state_data.selected_task = if filtered_tasks.len() == 0 {
                                 None
                             } else if index == filtered_tasks.len() {
@@ -231,7 +250,7 @@ pub async fn search_tasks(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     mut state_data: DisplayingTasksData,
 ) -> Result<States> {
-    let tasks = db.list_tasks().await?;
+    let tasks = db.list_tasks(true).await?;
 
     state_data.command_palette_text = "/".to_owned();
 
@@ -241,7 +260,14 @@ pub async fn search_tasks(
         );
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
-            draw_tasks(&tasks, frame, remaining_space, state_data.selected_task, &state_data, false);
+            draw_tasks(
+                &tasks,
+                frame,
+                remaining_space,
+                state_data.selected_task,
+                &state_data,
+                false,
+            );
 
             if let Ok(cursor_x) = state_data.command_palette_text.len().try_into() {
                 frame.set_cursor(cursor_x, frame.size().height - 1);
@@ -287,7 +313,7 @@ pub async fn ask_for_tasks(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     mut state_data: DisplayingTasksData,
 ) -> Result<States, Error> {
-    let prev_tasks = db.list_tasks().await?;
+    let prev_tasks = db.list_tasks(state_data.search_string.is_some()).await?;
 
     let mut task = String::new();
 
@@ -296,7 +322,14 @@ pub async fn ask_for_tasks(
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_command_palette(frame, &state_data);
-            draw_tasks(&prev_tasks, frame, remaining_space, None, &state_data, false);
+            draw_tasks(
+                &prev_tasks,
+                frame,
+                remaining_space,
+                None,
+                &state_data,
+                false,
+            );
 
             let block = Block::default().title("New Task").borders(Borders::ALL);
 
@@ -331,7 +364,6 @@ pub async fn ask_for_tasks(
             let text_widget = widgets::Paragraph::new(displayed_text);
             frame.render_widget(block, size);
             frame.render_widget(text_widget, inner_area);
-
         })?;
 
         match read()? {
@@ -357,7 +389,7 @@ pub async fn ask_for_tasks(
         }
     }
 
-    let new_task = db.add_task(&task).await?;
+    let new_task = db.add_task(&task, None).await?;
     state_data.selected_task = Some(new_task.id);
 
     Ok(States::DisplayingTasks(
