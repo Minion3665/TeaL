@@ -16,8 +16,9 @@ use tui::{
     backend::CrosstermBackend,
     layout::Rect,
     style::{Color, Modifier, Style},
+    text::{Span, Spans},
     widgets::{self, Block, Borders, ListState, Paragraph},
-    Frame, Terminal, text::{Text, Span, Spans},
+    Frame, Terminal,
 };
 
 #[derive(PartialEq)]
@@ -27,11 +28,12 @@ pub enum DisplayingTasksStates {
     Search,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct DisplayingTasksData {
     pub selected_task: Option<i64>,
     pub command_palette_text: String,
     pub search_string: Option<String>,
+    pub mode: String,
 }
 
 #[derive(PartialEq)]
@@ -62,23 +64,56 @@ fn task_index_from_id(tasks: &Vec<Task>, id: Option<i64>) -> Option<usize> {
     None
 }
 
-/// Draw the command palette at the bottom of the screen, returning the remaining screen space
-fn draw_command_palette(
-    frame: &mut Frame<CrosstermBackend<Stdout>>,
-    state_data: &DisplayingTasksData,
-) -> Rect {
+/// Draw the command palette and mode line at the bottom of the screen, returning the remaining screen space
+fn draw_status_lines(frame: &mut Frame<CrosstermBackend<Stdout>>, state: &States) -> Rect {
     let mut total_size = frame.size();
 
-    let widget = Paragraph::new(state_data.command_palette_text.clone());
-    let area = Rect {
+    if let States::DisplayingTasks(_, state_data) = state {
+        let command_palette = Paragraph::new(state_data.command_palette_text.clone());
+        let command_palette_area = Rect {
+            x: 0,
+            y: total_size.height - 1,
+            width: total_size.width,
+            height: 1,
+        };
+
+        frame.render_widget(command_palette, command_palette_area);
+        total_size.height -= 1;
+    }
+
+    let mode = match state {
+        States::DisplayingTasks(inner_state, state_data) => match inner_state {
+            DisplayingTasksStates::Normal => {
+                if state_data.search_string.is_some() {
+                    "List (searching)"
+                } else {
+                    "List"
+                }
+            }
+            DisplayingTasksStates::Create => "Append",
+            DisplayingTasksStates::Search => "Search",
+        },
+        States::Quitting => return frame.size(),
+    };
+
+    let mode_line_text = vec![Span::styled(
+        format!(" {} ", mode),
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )];
+
+    let mode_line = Paragraph::new(Spans::from(mode_line_text));
+    let mode_line_area = Rect {
         x: 0,
         y: total_size.height - 1,
         width: total_size.width,
         height: 1,
     };
-    frame.render_widget(widget, area);
-
+    frame.render_widget(mode_line, mode_line_area);
     total_size.height -= 1;
+
     total_size
 }
 
@@ -101,6 +136,7 @@ fn draw_tasks(
     already_filtered: bool,
 ) {
     let block = Block::default().title("Your tasks").borders(Borders::ALL);
+
     let mut list_items = Vec::new();
 
     let filtered_tasks;
@@ -111,17 +147,19 @@ fn draw_tasks(
         owned_filtered_tasks = filter_tasks(tasks, state_data);
         filtered_tasks = &owned_filtered_tasks;
     }
+    if filtered_tasks.is_empty() && (!tasks.is_empty() || already_filtered) {
+        widgets::Paragraph::new("There's nothing here, try removing your filters or ");
+    }
     for task in filtered_tasks {
-        let mut text_parts = vec![Span::from(format!(
-            "[{}]: {}",
-            task.id, task.description
-        ))];
+        let mut text_parts = vec![Span::from(format!("{}", task.description))];
 
         if let Some(parent_id) = task.parent {
-            text_parts.push(Span::styled(format!(
-                " (child of task {})",
-                parent_id
-            ), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)))
+            text_parts.push(Span::styled(
+                format!(" (child of task {})", parent_id),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ))
         }
         list_items.push(widgets::ListItem::new(Spans::from(text_parts)));
     }
@@ -165,7 +203,10 @@ pub async fn display_tasks(
 
     loop {
         terminal.draw(|frame| {
-            let remaining_space = draw_command_palette(frame, &state_data);
+            let remaining_space = draw_status_lines(
+                frame,
+                &States::DisplayingTasks(DisplayingTasksStates::Normal, state_data.clone()),
+            );
             draw_tasks(
                 &filtered_tasks,
                 frame,
@@ -259,7 +300,10 @@ pub async fn search_tasks(
             state_data.command_palette_text[1..state_data.command_palette_text.len()].to_owned(),
         );
         terminal.draw(|frame| {
-            let remaining_space = draw_command_palette(frame, &state_data);
+            let remaining_space = draw_status_lines(
+                frame,
+                &States::DisplayingTasks(DisplayingTasksStates::Search, state_data.clone()),
+            );
             draw_tasks(
                 &tasks,
                 frame,
@@ -321,7 +365,10 @@ pub async fn ask_for_tasks(
         "Press <ENTER> to finish adding the task, or <ESCAPE> to cancel".to_owned();
     loop {
         terminal.draw(|frame| {
-            let remaining_space = draw_command_palette(frame, &state_data);
+            let remaining_space = draw_status_lines(
+                frame,
+                &States::DisplayingTasks(DisplayingTasksStates::Create, state_data.clone()),
+            );
             draw_tasks(
                 &prev_tasks,
                 frame,

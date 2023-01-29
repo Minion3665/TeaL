@@ -134,12 +134,12 @@ impl Database {
         let tasks = sqlx::query_as!(
             Task,
             "WITH RECURSIVE subtask_tree AS (
-            SELECT *
-            FROM tasks
-            WHERE id = ?
+                SELECT *
+                FROM tasks
+                WHERE id = ?
             UNION ALL
-            SELECT subtasks.*
-            FROM tasks subtasks
+                SELECT subtasks.*
+                FROM tasks subtasks
             INNER JOIN subtask_tree ON subtask_tree.id = subtasks.parent
         )
         SELECT * FROM subtask_tree",
