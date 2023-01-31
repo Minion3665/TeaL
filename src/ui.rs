@@ -1,3 +1,4 @@
+use color_eyre::owo_colors::OwoColorize;
 use eyre::Result;
 use std::io::{stdout, Stdout};
 
@@ -67,6 +68,9 @@ fn task_index_from_id(tasks: &Vec<Task>, id: Option<i64>) -> Option<usize> {
 /// Draw the command palette and mode line at the bottom of the screen, returning the remaining screen space
 fn draw_status_lines(frame: &mut Frame<CrosstermBackend<Stdout>>, state: &States) -> Rect {
     let mut total_size = frame.size();
+    if total_size.height < 2 {
+        return total_size; // No space for status lines
+    }
 
     if let States::DisplayingTasks(_, state_data) = state {
         let command_palette = Paragraph::new(state_data.command_palette_text.clone());
@@ -135,7 +139,9 @@ fn draw_tasks(
     state_data: &DisplayingTasksData,
     already_filtered: bool,
 ) {
-    let block = Block::default().title("Your tasks").borders(Borders::ALL);
+    let block = Block::default()
+        .title("┤ Your tasks ├")
+        .borders(Borders::ALL);
 
     let mut list_items = Vec::new();
 
@@ -147,11 +153,19 @@ fn draw_tasks(
         owned_filtered_tasks = filter_tasks(tasks, state_data);
         filtered_tasks = &owned_filtered_tasks;
     }
-    if filtered_tasks.is_empty() && (!tasks.is_empty() || already_filtered) {
-        widgets::Paragraph::new("There's nothing here, try removing your filters or ");
+    if filtered_tasks.is_empty() {
+        let warning = widgets::Paragraph::new(
+            Span::styled(
+                " There's nothing here, try removing your filters or press `n` to add a new task",
+                Style::default().add_modifier(Modifier::ITALIC)
+            )
+        )
+        .block(block);
+        frame.render_widget(warning, remaining_space);
+        return;
     }
     for task in filtered_tasks {
-        let mut text_parts = vec![Span::from(format!("{}", task.description))];
+        let mut text_parts = vec![Span::from(format!(" {}", task.description))];
 
         if let Some(parent_id) = task.parent {
             text_parts.push(Span::styled(
@@ -378,7 +392,7 @@ pub async fn ask_for_tasks(
                 false,
             );
 
-            let block = Block::default().title("New Task").borders(Borders::ALL);
+            let block = Block::default().title("┤ New task ├").borders(Borders::ALL);
 
             let width = 42;
             let height = 3;
