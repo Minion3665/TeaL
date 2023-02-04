@@ -314,12 +314,21 @@ pub async fn display_task_fullscreen(
                             (BoxDrawing::Dedented, BoxDrawing::Dedented) => "└──",
                         };
 
-                        format!(
-                            "{}{}{}",
-                            " ".repeat(line.0 * 2 + 1 - box_drawing_character.chars().count()),
-                            box_drawing_character,
-                            line.1.description,
-                        )
+                        Spans::from(vec![
+                            Span::raw(format!(
+                                "{}{}",
+                                " ".repeat(line.0 * 2 + 1 - box_drawing_character.chars().count()),
+                                box_drawing_character,
+                            )),
+                            Span::styled(
+                                line.1.description.clone(),
+                                if line.0 == 0 {
+                                    Style::default().fg(Color::Cyan)
+                                } else {
+                                    Style::default()
+                                },
+                            ),
+                        ])
                     })
                     .map(|line| widgets::ListItem::new(line))
                     .collect::<Vec<widgets::ListItem>>(),
