@@ -18,21 +18,68 @@ pub struct Task {
 }
 // See also: https://www.geeksforgeeks.org/recursive-join-in-sql/
 
+impl From<&TaskTree> for Task {
+    fn from(item: &TaskTree) -> Self {
+        Self {
+            id: item.id,
+            description: item.description.clone(),
+            complete: item.complete,
+            parent: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskTree {
     pub id: i64,
     pub description: String,
     pub complete: bool,
     pub children: Vec<TaskTree>,
+    pub level: usize,
 }
 
 impl TaskTree {
-    pub fn from_tasks(tasks: Vec<Task>) -> eyre::Result<Self> {
+    fn from_task_and_children(
+        task: &Task,
+        children: &HashMap<i64, Vec<Task>>,
+        level: usize,
+    ) -> Self {
+        Self::from_task_and_task_trees(
+            task,
+            children
+                .get(&task.id)
+                .unwrap_or(&Vec::<Task>::default())
+                .into_iter()
+                .map(|task| TaskTree::from_task_and_children(task, &children, level + 1))
+                .collect(),
+            level,
+        )
+    }
+
+    fn from_task_and_task_trees(task: &Task, children: Vec<TaskTree>, level: usize) -> Self {
+        TaskTree {
+            id: task.id,
+            description: task.description.clone(),
+            complete: task.complete,
+            children,
+            level,
+        }
+    }
+
+}
+
+impl TryFrom<Vec<Task>> for TaskTree {
+    type Error = Report;
+
+    fn try_from(tasks: Vec<Task>) -> eyre::Result<Self> {
         let mut root: Option<Task> = None;
 
         let mut children: HashMap<i64, Vec<Task>> = HashMap::default();
 
-        for task in tasks {
+        let mut task_ids = Vec::<i64>::new();
+
+        for task in tasks.clone() {
+            task_ids.push(task.id);
             match task.parent {
                 None => {
                     if root.is_some() {
@@ -47,30 +94,39 @@ impl TaskTree {
         }
 
         match root {
-            None => Err(Report::msg("No root task found")),
-            Some(root) => Ok(Self::from_task_and_children(&root, &children)),
+            None => {
+                for task in tasks {
+                    if let Some(parent) = task.parent {
+                        if !task_ids.contains(&parent) {
+                            return Ok(Self::from_task_and_children(&task, &children, 0));
+                        }
+                    }
+                }
+                Err(Report::msg("No root task found"))
+            }
+            Some(root) => Ok(Self::from_task_and_children(&root, &children, 0)),
         }
     }
 
-    fn from_task_and_children(task: &Task, children: &HashMap<i64, Vec<Task>>) -> Self {
-        Self::from_task_and_task_trees(
-            task,
-            children
-                .get(&task.id)
-                .unwrap()
-                .into_iter()
-                .map(|task| TaskTree::from_task_and_children(task, &children))
-                .collect(),
-        )
-    }
+}
 
-    fn from_task_and_task_trees(task: &Task, children: Vec<TaskTree>) -> Self {
-        TaskTree {
-            id: task.id,
-            description: task.description.clone(),
-            complete: task.complete,
-            children,
+impl IntoIterator for TaskTree {
+    type Item = (usize, Task);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Vec::<Self::Item>::from(self).into_iter()
+    }
+}
+
+impl From<TaskTree> for Vec<(usize, Task)> {
+    fn from(tree: TaskTree) -> Self {
+        let mut result: Vec<(usize, Task)> = vec![(tree.level, (&tree).into())];
+        for child in tree.children {
+            result.append(&mut child.into());
         }
+
+        result
     }
 }
 
@@ -147,7 +203,7 @@ impl Database {
         )
         .fetch_all(&mut self.connection)
         .await?;
-        TaskTree::from_tasks(tasks)
+        tasks.try_into()
     }
 }
 

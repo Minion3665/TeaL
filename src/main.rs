@@ -28,7 +28,6 @@ async fn run() -> Result<()> {
         selected_task: None,
         command_palette_text: "Welcome to TeaL! Press 'n' to add a task, 'd' to remove a task or 'h' for more help".to_owned(),
         search_string: None,
-        mode: "List".to_owned(),
     });
     loop {
         state = ui::display_state(state, &mut terminal, &mut db).await?;

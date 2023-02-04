@@ -1,9 +1,12 @@
 {
   "cSpell.words": [
     "AUTOINCREMENT",
+    "Dedented",
+    "Fullscreen",
     "crossterm",
     "dbdesigner",
     "jimmybilly",
-    "sqlx"
+    "sqlx",
+    "structs"
   ]
 }

@@ -1,4 +1,4 @@
-use color_eyre::owo_colors::OwoColorize;
+use color_eyre::Report;
 use eyre::Result;
 use std::io::{stdout, Stdout};
 
@@ -29,18 +29,41 @@ pub enum DisplayingTasksStates {
     Search,
 }
 
+pub trait StateData {
+    fn get_command_palette_text(&self) -> &str;
+}
+
 #[derive(PartialEq, Clone)]
 pub struct DisplayingTasksData {
     pub selected_task: Option<i64>,
     pub command_palette_text: String,
     pub search_string: Option<String>,
-    pub mode: String,
+}
+
+#[derive(PartialEq, Clone)]
+pub struct DisplayingTaskFullscreenData {
+    pub command_palette_text: String,
+    pub task_id: i64,
+    pub selected_task: Option<i64>,
+}
+
+impl StateData for DisplayingTasksData {
+    fn get_command_palette_text(&self) -> &str {
+        return &self.command_palette_text;
+    }
+}
+
+impl StateData for DisplayingTaskFullscreenData {
+    fn get_command_palette_text(&self) -> &str {
+        return &self.command_palette_text;
+    }
 }
 
 #[derive(PartialEq)]
 pub enum States {
     Quitting,
     DisplayingTasks(DisplayingTasksStates, DisplayingTasksData),
+    DisplayingTaskFullscreen(DisplayingTaskFullscreenData),
 }
 
 pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -72,8 +95,16 @@ fn draw_status_lines(frame: &mut Frame<CrosstermBackend<Stdout>>, state: &States
         return total_size; // No space for status lines
     }
 
-    if let States::DisplayingTasks(_, state_data) = state {
-        let command_palette = Paragraph::new(state_data.command_palette_text.clone());
+    let state_data: Option<&dyn StateData> = if let States::DisplayingTasks(_, state_data) = state {
+        Some(state_data)
+    } else if let States::DisplayingTaskFullscreen(state_data) = state {
+        Some(state_data)
+    } else {
+        None
+    };
+
+    if let Some(state_data) = state_data {
+        let command_palette = Paragraph::new(state_data.get_command_palette_text().clone());
         let command_palette_area = Rect {
             x: 0,
             y: total_size.height - 1,
@@ -97,6 +128,7 @@ fn draw_status_lines(frame: &mut Frame<CrosstermBackend<Stdout>>, state: &States
             DisplayingTasksStates::Create => "Append",
             DisplayingTasksStates::Search => "Search",
         },
+        States::DisplayingTaskFullscreen(_) => "Task",
         States::Quitting => return frame.size(),
     };
 
@@ -154,12 +186,10 @@ fn draw_tasks(
         filtered_tasks = &owned_filtered_tasks;
     }
     if filtered_tasks.is_empty() {
-        let warning = widgets::Paragraph::new(
-            Span::styled(
-                " There's nothing here, try removing your filters or press `n` to add a new task",
-                Style::default().add_modifier(Modifier::ITALIC)
-            )
-        )
+        let warning = widgets::Paragraph::new(Span::styled(
+            " There's nothing here, try removing your filters or press `n` to add a new task",
+            Style::default().add_modifier(Modifier::ITALIC),
+        ))
         .block(block);
         frame.render_widget(warning, remaining_space);
         return;
@@ -203,6 +233,130 @@ pub fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()>
     )?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+enum BoxDrawing {
+    EndOfList,
+    GreaterOrEqual,
+    Dedented,
+}
+
+pub async fn display_task_fullscreen(
+    db: &mut database::Database,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state_data: DisplayingTaskFullscreenData,
+) -> Result<States, Report> {
+    let task_tree = db.list_subtasks(state_data.task_id).await?;
+
+    loop {
+        terminal.draw(|frame| {
+            let remaining_space =
+                draw_status_lines(frame, &States::DisplayingTaskFullscreen(state_data.clone()));
+
+            let description = widgets::Paragraph::new(task_tree.description.clone())
+                .style(Style::default().add_modifier(Modifier::UNDERLINED));
+            frame.render_widget(
+                description,
+                Rect {
+                    x: 1,
+                    y: 1,
+                    width: task_tree.description.len().try_into().unwrap(),
+                    height: 1,
+                },
+            );
+
+            let task_list_border = widgets::Block::default()
+                .borders(Borders::ALL)
+                .title("┤ Subtasks ├");
+            let task_list = widgets::List::new(
+                vec![None]
+                    .into_iter()
+                    .chain(task_tree.clone().into_iter().map(Some))
+                    .chain(vec![None].into_iter())
+                    .collect::<Vec<Option<(usize, Task)>>>()
+                    .windows(3)
+                    .map(|lines| {
+                        let [line_before, line, line_after] = lines else { unreachable!() };
+                        // Windows(3) must *always* return 3 elements here
+                        let line = line.as_ref().unwrap();
+
+                        let box_drawing_top = match line_before {
+                            None => BoxDrawing::EndOfList,
+                            Some(line_before) => {
+                                if line_before.0 >= line.0 {
+                                    BoxDrawing::GreaterOrEqual
+                                } else {
+                                    BoxDrawing::Dedented
+                                }
+                            }
+                        };
+
+                        let box_drawing_bottom = match line_after {
+                            None => BoxDrawing::EndOfList,
+                            Some(line_after) => {
+                                if line_after.0 >= line.0 {
+                                    BoxDrawing::GreaterOrEqual
+                                } else {
+                                    BoxDrawing::Dedented
+                                }
+                            }
+                        };
+
+                        let box_drawing_character = match (box_drawing_top, box_drawing_bottom) {
+                            (BoxDrawing::EndOfList, BoxDrawing::EndOfList) => "",
+                            (BoxDrawing::EndOfList, BoxDrawing::GreaterOrEqual) => "┌",
+                            (BoxDrawing::EndOfList, BoxDrawing::Dedented) => unreachable!(),
+                            (BoxDrawing::GreaterOrEqual, BoxDrawing::EndOfList) => "└",
+                            (BoxDrawing::GreaterOrEqual, BoxDrawing::GreaterOrEqual) => "├",
+                            (BoxDrawing::GreaterOrEqual, BoxDrawing::Dedented) => "└",
+                            (BoxDrawing::Dedented, BoxDrawing::EndOfList) => "└──",
+                            (BoxDrawing::Dedented, BoxDrawing::GreaterOrEqual) => "└─┬",
+                            (BoxDrawing::Dedented, BoxDrawing::Dedented) => "└──",
+                        };
+
+                        format!(
+                            "{}{}{}",
+                            " ".repeat(line.0 * 2 + 1 - box_drawing_character.chars().count()),
+                            box_drawing_character,
+                            line.1.description,
+                        )
+                    })
+                    .map(|line| widgets::ListItem::new(line))
+                    .collect::<Vec<widgets::ListItem>>(),
+            )
+            .block(task_list_border);
+
+            frame.render_stateful_widget(
+                task_list,
+                Rect {
+                    x: remaining_space.x,
+                    y: remaining_space.y + 5,
+                    width: remaining_space.width,
+                    height: remaining_space.height - 5,
+                },
+                &mut ListState::default(),
+            );
+        })?;
+
+        match read()? {
+            Event::FocusGained => todo!(),
+            Event::FocusLost => todo!(),
+            Event::Key(event) => match event.code {
+                KeyCode::Char('q') => break,
+                _ => continue,
+            },
+            _ => continue,
+        }
+    }
+
+    Ok(States::DisplayingTasks(
+        DisplayingTasksStates::Normal,
+        DisplayingTasksData {
+            selected_task: Some(state_data.task_id),
+            command_palette_text: "".to_owned(),
+            search_string: None,
+        },
+    ))
 }
 
 pub async fn display_tasks(
@@ -292,6 +446,18 @@ pub async fn display_tasks(
                         DisplayingTasksStates::Search,
                         state_data,
                     ));
+                }
+                KeyCode::Enter => {
+                    if let Some(selected_task) = state_data.selected_task {
+                        return Ok(States::DisplayingTaskFullscreen(
+                            DisplayingTaskFullscreenData {
+                                command_palette_text: "Press 'q' to return to the task list"
+                                    .to_owned(),
+                                task_id: selected_task,
+                                selected_task: None,
+                            },
+                        ));
+                    }
                 }
                 _ => continue,
             },
@@ -473,6 +639,9 @@ pub async fn display_state(
         }
         States::DisplayingTasks(DisplayingTasksStates::Search, state_data) => {
             Ok(search_tasks(db, terminal, state_data).await?)
+        }
+        States::DisplayingTaskFullscreen(state_data) => {
+            Ok(display_task_fullscreen(db, terminal, state_data).await?)
         }
         States::Quitting => panic!("display_state called when the application is already quitting"),
     }
