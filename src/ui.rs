@@ -1,9 +1,12 @@
 use color_eyre::Report;
 use eyre::Result;
-use std::io::{stdout, Stdout};
+use std::{
+    collections::HashSet,
+    io::{stdout, Stdout},
+};
 
 use crate::{
-    database::{self, Database, Task},
+    database::{self, Database, FlatTaskTreeElement, Task},
     sorting::search,
 };
 use crossterm::{
@@ -237,7 +240,8 @@ pub fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()>
 
 enum BoxDrawing {
     EndOfList,
-    GreaterOrEqual,
+    Indented,
+    Equal,
     Dedented,
 }
 
@@ -268,23 +272,43 @@ pub async fn display_task_fullscreen(
             let task_list_border = widgets::Block::default()
                 .borders(Borders::ALL)
                 .title("┤ Subtasks ├");
+
+            let flat_task_tree = vec![None]
+                .into_iter()
+                .chain(task_tree.clone().into_iter().map(Some))
+                .chain(vec![None].into_iter())
+                .collect::<Vec<Option<FlatTaskTreeElement>>>();
+
+            let mut all_indent_lines: Vec<HashSet<usize>> = vec![HashSet::new()];
+
+            for line in task_tree.clone().into_iter().skip(1) {
+                let mut previous_indent_lines = all_indent_lines[all_indent_lines.len() - 1].clone();
+
+                if line.last_under_parent {
+                    previous_indent_lines.remove(&line.level);
+                } else {
+                    previous_indent_lines.insert(line.level);
+                }
+
+                all_indent_lines.push(previous_indent_lines);
+            }
+
             let task_list = widgets::List::new(
-                vec![None]
-                    .into_iter()
-                    .chain(task_tree.clone().into_iter().map(Some))
-                    .chain(vec![None].into_iter())
-                    .collect::<Vec<Option<(usize, Task)>>>()
+                flat_task_tree
                     .windows(3)
+                    .zip(all_indent_lines)
                     .map(|lines| {
-                        let [line_before, line, line_after] = lines else { unreachable!() };
+                        let ([line_before, line, line_after], indent_lines) = lines else { unreachable!() };
                         // Windows(3) must *always* return 3 elements here
                         let line = line.as_ref().unwrap();
 
                         let box_drawing_top = match line_before {
                             None => BoxDrawing::EndOfList,
                             Some(line_before) => {
-                                if line_before.0 >= line.0 {
-                                    BoxDrawing::GreaterOrEqual
+                                if line_before.level == line.level {
+                                    BoxDrawing::Equal
+                                } else if line_before.level > line.level {
+                                    BoxDrawing::Indented
                                 } else {
                                     BoxDrawing::Dedented
                                 }
@@ -294,35 +318,50 @@ pub async fn display_task_fullscreen(
                         let box_drawing_bottom = match line_after {
                             None => BoxDrawing::EndOfList,
                             Some(line_after) => {
-                                if line_after.0 >= line.0 {
-                                    BoxDrawing::GreaterOrEqual
+                                if line_after.level == line.level {
+                                    BoxDrawing::Equal
+                                } else if line_after.level > line.level {
+                                    BoxDrawing::Indented
                                 } else {
                                     BoxDrawing::Dedented
                                 }
                             }
                         };
 
-                        let box_drawing_character = match (box_drawing_top, box_drawing_bottom) {
-                            (BoxDrawing::EndOfList, BoxDrawing::EndOfList) => "",
-                            (BoxDrawing::EndOfList, BoxDrawing::GreaterOrEqual) => "┌",
-                            (BoxDrawing::EndOfList, BoxDrawing::Dedented) => unreachable!(),
-                            (BoxDrawing::GreaterOrEqual, BoxDrawing::EndOfList) => "└",
-                            (BoxDrawing::GreaterOrEqual, BoxDrawing::GreaterOrEqual) => "├",
-                            (BoxDrawing::GreaterOrEqual, BoxDrawing::Dedented) => "└",
-                            (BoxDrawing::Dedented, BoxDrawing::EndOfList) => "└──",
-                            (BoxDrawing::Dedented, BoxDrawing::GreaterOrEqual) => "└─┬",
-                            (BoxDrawing::Dedented, BoxDrawing::Dedented) => "└──",
+                        let box_drawing_character = match (box_drawing_top, box_drawing_bottom, line.last_under_parent) {
+                            (BoxDrawing::EndOfList, BoxDrawing::Dedented, _) => unreachable!(),
+                            (BoxDrawing::EndOfList, _, _) => "",
+                            (
+                                _,
+                                BoxDrawing::Indented,
+                                false
+                            ) => "├─",
+                            (
+                                _,
+                                BoxDrawing::EndOfList | BoxDrawing::Indented | BoxDrawing::Dedented,
+                                _
+                            ) => "└─",
+                            (_, BoxDrawing::Equal, _) => "├─",
                         };
 
                         Spans::from(vec![
                             Span::raw(format!(
-                                "{}{}",
-                                " ".repeat(line.0 * 2 + 1 - box_drawing_character.chars().count()),
+                                "{}{}{} ",
+                                if line.level == 0 { "" } else { "   " },
+                                (0..line.level).skip(1).map(
+                                    |level| {
+                                        if indent_lines.contains(&level) {
+                                            "│    "
+                                        } else {
+                                            "     "
+                                        }
+                                    }
+                                ).collect::<Vec<&str>>().join(""),
                                 box_drawing_character,
                             )),
                             Span::styled(
-                                line.1.description.clone(),
-                                if line.0 == 0 {
+                                line.task.description.clone(),
+                                if line.level == 0 {
                                     Style::default().fg(Color::Cyan)
                                 } else {
                                     Style::default()

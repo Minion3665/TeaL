@@ -16,11 +16,22 @@ async fn run() -> Result<()> {
 
     db.setup().await?;
 
-    db.add_task("This is a task", None).await?;
-    let task2 = db.add_task("This is another task", None).await?;
-    db.add_task("This is child task", Some(&task2)).await?;
-    let task2_child2 = db.add_task("This is another child task", Some(&task2)).await?; 
-    db.add_task("This is grandchild task", Some(&task2_child2)).await?;
+    let level1 = db.add_task("Level 1", None).await?;
+    let level2 = db.add_task("Level 2", Some(&level1)).await?;
+    let level3 = db.add_task("Level 3", Some(&level2)).await?;
+    let level4 = db.add_task("Level 4", Some(&level3)).await?;
+    let level5 = db.add_task("Level 5", Some(&level4)).await?;
+    let level6 = db.add_task("Level 6", Some(&level5)).await?;
+    let level7 = db.add_task("Level 7", Some(&level6)).await?;
+    let level8 = db.add_task("Level 8", Some(&level7)).await?;
+    let level9 = db.add_task("Level 9", Some(&level8)).await?;
+    let level10 = db.add_task("Level 10", Some(&level9)).await?;
+    let level11 = db.add_task("Level 11", Some(&level10)).await?;
+    let level12 = db.add_task("Level 12", Some(&level11)).await?;
+    db.add_task("Level 5.2", Some(&level4)).await?;
+    db.add_task("Level 5.3", Some(&level4)).await?;
+    db.add_task("Level 4.2", Some(&level3)).await?;
+    db.add_task("Level 4.3", Some(&level3)).await?;
 
     let mut terminal = ui::setup()?;
 

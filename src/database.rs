@@ -65,7 +65,6 @@ impl TaskTree {
             level,
         }
     }
-
 }
 
 impl TryFrom<Vec<Task>> for TaskTree {
@@ -107,11 +106,10 @@ impl TryFrom<Vec<Task>> for TaskTree {
             Some(root) => Ok(Self::from_task_and_children(&root, &children, 0)),
         }
     }
-
 }
 
 impl IntoIterator for TaskTree {
-    type Item = (usize, Task);
+    type Item = FlatTaskTreeElement;
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -119,11 +117,39 @@ impl IntoIterator for TaskTree {
     }
 }
 
-impl From<TaskTree> for Vec<(usize, Task)> {
+pub struct FlatTaskTreeElement {
+    pub level: usize,
+    pub last_under_parent: bool,
+    pub task: Task,
+}
+
+struct TaskTreeElement {
+    pub last_under_parent: bool,
+    pub task_tree: TaskTree,
+}
+
+impl From<TaskTree> for Vec<FlatTaskTreeElement> {
     fn from(tree: TaskTree) -> Self {
-        let mut result: Vec<(usize, Task)> = vec![(tree.level, (&tree).into())];
-        for child in tree.children {
-            result.append(&mut child.into());
+        TaskTreeElement {
+            last_under_parent: true,
+            task_tree: tree,
+        }.into()
+    }
+}
+
+impl From<TaskTreeElement> for Vec<FlatTaskTreeElement> {
+    fn from(tree: TaskTreeElement) -> Self {
+        let mut result: Vec<FlatTaskTreeElement> = vec![FlatTaskTreeElement {
+            level: tree.task_tree.level,
+            task: Task::from(&tree.task_tree),
+            last_under_parent: tree.last_under_parent,
+        }];
+        let children_length = tree.task_tree.children.len();
+        for (index, child) in tree.task_tree.children.into_iter().enumerate() {
+            result.append(&mut TaskTreeElement{
+                task_tree: child,
+                last_under_parent: index + 1 == children_length,
+            }.into());
         }
 
         result
