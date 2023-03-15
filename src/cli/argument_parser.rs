@@ -10,7 +10,7 @@ pub struct Arguments<'a> {
     pub command: &'a str,
 }
 
-pub fn parse_args<'a>(args: Vec<&'a str>) -> Result<Arguments<'a>> {
+pub fn parse_args(args: Vec<&'_ str>) -> Result<Arguments<'_>> {
     if args.is_empty() {
         return Err(eyre::Error::msg("Empty arguments vectors are unparseable as the first item in the vector must always be the command name"));
     }
@@ -46,8 +46,8 @@ pub fn parse_args<'a>(args: Vec<&'a str>) -> Result<Arguments<'a>> {
             } else {
                 Vec::new()
             };
-        } else if arg.starts_with("-") {
-            let flag_letters = arg.strip_prefix("-").unwrap();
+        } else if arg.starts_with('-') {
+            let flag_letters = arg.strip_prefix('-').unwrap();
 
             for letter in flag_letters.graphemes(true) {
                 // ^ The true flag means that extended grapheme clusters are used
@@ -63,12 +63,10 @@ pub fn parse_args<'a>(args: Vec<&'a str>) -> Result<Arguments<'a>> {
                     Vec::new()
                 };
             }
+        } else if processing_flag.is_some() {
+            processing_flag_values.push(arg);
         } else {
-            if processing_flag.is_some() {
-                processing_flag_values.push(arg);
-            } else {
-                subcommand.push(arg);
-            }
+            subcommand.push(arg);
         }
     }
 
@@ -76,16 +74,16 @@ pub fn parse_args<'a>(args: Vec<&'a str>) -> Result<Arguments<'a>> {
         arguments.insert(flag_name, processing_flag_values);
     }
 
-    let mut flags = HashSet::new();
+    let mut flags: HashSet<&str> = HashSet::new();
 
     let args = HashMap::from_iter(arguments.into_iter().filter(|(key, value)| {
         if removed_arguments.contains(key) {
-            return false;
+            false
         } else if value.is_empty() {
-            flags.insert(key.clone());
-            return false;
+            flags.insert(key);
+            false
         } else {
-            return true;
+            true
         }
     }));
 
@@ -101,7 +99,7 @@ pub fn parse_ids(ids: Option<&Vec<&str>>) -> Result<Vec<i64>, String> {
     if let Some(task_ids) = ids {
         let mut parsed_task_ids: Vec<i64> = vec![];
         for id in task_ids {
-            let last_id_bit = id.split(".").last().unwrap_or_default();
+            let last_id_bit = id.split('.').last().unwrap_or_default();
             if let Ok(id) = last_id_bit.parse::<i64>() {
                 parsed_task_ids.push(id);
             } else {

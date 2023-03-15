@@ -2,7 +2,7 @@ use color_eyre::Report;
 use eyre::Result;
 use std::{
     collections::HashSet,
-    io::{stdout, Stdout},
+    io::{stdout, Stdout}, cmp::Ordering,
 };
 
 use crate::{
@@ -35,7 +35,7 @@ pub enum DisplayingTasksStates {
 #[derive(PartialEq)]
 pub enum DisplayingTaskFullscreenStates {
     Normal,
-    Create,
+    // TODO: Create,
 }
 
 pub trait StateData {
@@ -58,13 +58,13 @@ pub struct DisplayingTaskFullscreenData {
 
 impl StateData for DisplayingTasksData {
     fn get_command_palette_text(&self) -> &str {
-        return &self.command_palette_text;
+        &self.command_palette_text
     }
 }
 
 impl StateData for DisplayingTaskFullscreenData {
     fn get_command_palette_text(&self) -> &str {
-        return &self.command_palette_text;
+        &self.command_palette_text
     }
 }
 
@@ -85,8 +85,8 @@ pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
 /// Provided a list of tasks and a task ID, do a linear search to find a task which has the correct
 /// ID. As IDs should be unique this is guaranteed to find all tasks with a given ID.
-fn task_index_from_id(tasks: &Vec<Task>, id: Option<i64>) -> Option<usize> {
-    for (index, task) in tasks.into_iter().enumerate() {
+fn task_index_from_id(tasks: &[Task], id: Option<i64>) -> Option<usize> {
+    for (index, task) in tasks.iter().enumerate() {
         if let Some(task_id) = id {
             if task.id == task_id {
                 return Some(index);
@@ -113,7 +113,7 @@ fn draw_status_lines(frame: &mut Frame<CrosstermBackend<Stdout>>, state: &States
     };
 
     if let Some(state_data) = state_data {
-        let command_palette = Paragraph::new(state_data.get_command_palette_text().clone());
+        let command_palette = Paragraph::new(state_data.get_command_palette_text());
         let command_palette_area = Rect {
             x: 0,
             y: total_size.height - 1,
@@ -166,7 +166,7 @@ fn filter_tasks(tasks: &Vec<Task>, state_data: &DisplayingTasksData) -> Vec<Task
     let mut filtered_tasks = tasks.to_owned();
 
     if let Some(ref query) = state_data.search_string {
-        filtered_tasks = search(&query, filtered_tasks);
+        filtered_tasks = search(query, filtered_tasks);
     }
 
     filtered_tasks
@@ -339,27 +339,21 @@ pub async fn display_task_fullscreen(
                             let box_drawing_top = match line_before {
                                 None => BoxDrawing::EndOfList,
                                 Some(line_before) => {
-                                    if line_before.level == line.level {
-                                        BoxDrawing::Equal
-                                    } else if line_before.level > line.level {
-                                        BoxDrawing::Indented
-                                    } else {
-                                        BoxDrawing::Dedented
+                                    match line_before.level.cmp(&line.level) {
+                                        Ordering::Equal => BoxDrawing::Equal,
+                                        Ordering::Greater => BoxDrawing::Indented,
+                                        Ordering::Less => BoxDrawing::Dedented,
                                     }
                                 }
                             };
 
                             let box_drawing_bottom = match line_after {
                                 None => BoxDrawing::EndOfList,
-                                Some(line_after) => {
-                                    if line_after.level == line.level {
-                                        BoxDrawing::Equal
-                                    } else if line_after.level > line.level {
-                                        BoxDrawing::Indented
-                                    } else {
-                                        BoxDrawing::Dedented
-                                    }
-                                }
+                                Some(line_after) => match line_after.level.cmp(&line.level) {
+                                    Ordering::Less => BoxDrawing::Dedented,
+                                    Ordering::Greater => BoxDrawing::Indented,
+                                    Ordering::Equal => BoxDrawing::Equal,
+                                },
                             };
 
                             let box_drawing_character =
@@ -410,7 +404,7 @@ pub async fn display_task_fullscreen(
                             unreachable!()
                         }
                     })
-                    .map(|line| widgets::ListItem::new(line))
+                    .map(widgets::ListItem::new)
                     .collect::<Vec<widgets::ListItem>>(),
             )
             .block(task_list_border);
@@ -431,7 +425,7 @@ pub async fn display_task_fullscreen(
             Event::FocusGained => todo!(),
             Event::FocusLost => todo!(),
             Event::Key(event) => match event.code {
-            KeyCode::Char(' ') => db.set_completion(task_tree.id, !task_tree.complete).await?,
+                KeyCode::Char(' ') => db.set_completion(task_tree.id, !task_tree.complete).await?,
                 KeyCode::Char('q') => break,
                 _ => continue,
             },
@@ -484,7 +478,7 @@ pub async fn display_tasks(
                 }
                 KeyCode::Char('q') => return Ok(States::Quitting),
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if filtered_tasks.len() < 1 {
+                    if filtered_tasks.is_empty() {
                         continue;
                     }
                     state_data.selected_task =
@@ -500,7 +494,7 @@ pub async fn display_tasks(
                         }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    if filtered_tasks.len() < 1 {
+                    if filtered_tasks.is_empty() {
                         continue;
                     }
                     state_data.selected_task =
@@ -521,7 +515,7 @@ pub async fn display_tasks(
                                 &db.list_tasks(state_data.search_string.is_some()).await?,
                                 &state_data,
                             );
-                            state_data.selected_task = if filtered_tasks.len() == 0 {
+                            state_data.selected_task = if filtered_tasks.is_empty() {
                                 None
                             } else if index == filtered_tasks.len() {
                                 Some(filtered_tasks[filtered_tasks.len() - 1].id)
@@ -611,7 +605,7 @@ pub async fn search_tasks(
     }
 
     if let Some(search_string) = &state_data.search_string {
-        if search_string.len() == 0 {
+        if search_string.is_empty() {
             state_data.search_string = None;
             state_data.command_palette_text = "".to_owned();
         }
@@ -734,10 +728,11 @@ pub async fn display_state(
         States::DisplayingTaskFullscreen(DisplayingTaskFullscreenStates::Normal, state_data) => {
             Ok(display_task_fullscreen(db, terminal, state_data).await?)
         }
-        States::DisplayingTaskFullscreen(DisplayingTaskFullscreenStates::Create, state_data) => {
-            todo!()
-            // Ok(add_subtask_of(db, terminal, state_data).await?)
-        }
+        // States::DisplayingTaskFullscreen(DisplayingTaskFullscreenStates::Create, _state_data) => {
+        //     todo!()
+        //     // Ok(add_subtask_of(db, terminal, state_data).await?)
+        // }
+
         States::Quitting => panic!("display_state called when the application is already quitting"),
     }
 }

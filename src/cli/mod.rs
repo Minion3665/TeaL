@@ -1,7 +1,7 @@
 use eyre::Result;
 
 use crate::{
-    database::{self, Database, ToFlatTaskTreeElement},
+    database::{self, Database, FlatTaskTreeElement, ToFlatTaskTreeElement},
     sorting,
 };
 
@@ -38,7 +38,7 @@ pub async fn run(mut db: Database, args: Vec<String>) -> Result<()> {
             let task_name = args.args.get("name").unwrap_or(&Vec::default()).join(" ");
             let parent = args.args.get("parent");
 
-            let parent_id = if let Some(_) = parent {
+            let parent_id = if parent.is_some() {
                 let all_parent_ids = match parse_ids(parent) {
                     Ok(all_parent_ids) => all_parent_ids,
                     Err(error) => {
@@ -71,7 +71,21 @@ pub async fn run(mut db: Database, args: Vec<String>) -> Result<()> {
 
             match task {
                 Ok(task) => {
-                    println!("{:#?}", task);
+                    println!(
+                        "{}",
+                        render_table(
+                            vec![FlatTaskTreeElement {
+                                level: 0,
+                                last_under_parent: false,
+                                task,
+                                parent_ids: match parent_id {
+                                    Some(parent_id) => vec![parent_id],
+                                    None => vec![],
+                                }
+                            }],
+                            args.flags.get("raw").is_some()
+                        )
+                    )
                 }
                 Err(error) => {
                     if let sqlx::Error::Database(error) = error {
@@ -97,10 +111,18 @@ pub async fn run(mut db: Database, args: Vec<String>) -> Result<()> {
                     for id in parsed_task_ids {
                         let deleted_tasks = db.remove_task(id).await?;
                         let number_of_deleted_tasks = deleted_tasks.len();
-                        let table = render_table(
-                            deleted_tasks.try_to_flat_task_tree_element()?,
-                            args.flags.get("raw").is_some(),
-                        );
+                        let flat_task_tree = match deleted_tasks.try_to_flat_task_tree_element() {
+                            Ok(flat_task_tree) => flat_task_tree,
+                            Err(_) => {
+                                println!(
+                                    "Task {} doesn't exist, please run '{} list' to view all of your tasks", 
+                                    id,
+                                    args.command
+                                );
+                                return Ok(());
+                            }
+                        };
+                        let table = render_table(flat_task_tree, args.flags.get("raw").is_some());
                         println!("Deleted {} tasks:", number_of_deleted_tasks);
                         println!("{}", table);
                     }

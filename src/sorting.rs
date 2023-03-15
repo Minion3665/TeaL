@@ -24,6 +24,8 @@ pub fn search(term: &str, tasks: Vec<Task>) -> Vec<Task> {
         .collect()
 }
 
+// TODO: Add more sorting/filtering methods
+/*
 pub fn alphabetical(tasks: Vec<Task>) -> Vec<Task> {
     let mut tasks = tasks;
     tasks.sort_by_key(|task| task.description.clone());
@@ -52,3 +54,4 @@ pub fn completion_filter(tasks: Vec<Task>) -> CompletionFilterResult {
         incomplete: incomplete_tasks,
     }
 }
+*/

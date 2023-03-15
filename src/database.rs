@@ -1,5 +1,10 @@
 use platform_dirs::AppDirs;
-use std::{borrow::Cow, collections::HashMap, path::PathBuf, fs::{self, File}};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fs::{self, File},
+    path::PathBuf,
+};
 
 use color_eyre::Report;
 use crossterm::style::Stylize;
@@ -22,9 +27,9 @@ pub struct Task {
 }
 // See also: https://www.geeksforgeeks.org/recursive-join-in-sql/
 
-impl Into<i64> for Task {
-    fn into(self) -> i64 {
-        self.id
+impl From<Task> for i64 {
+    fn from(task: Task) -> Self {
+        task.id
     }
 }
 
@@ -92,11 +97,11 @@ impl<'a, 'b> From<TaskAndChildMap<'a, 'b>> for TaskTree {
                 .child_map
                 .get(&task_and_child_map.task.id)
                 .unwrap_or(&Vec::<Task>::default())
-                .into_iter()
+                .iter()
                 .map(|task| {
                     TaskAndChildMap {
                         task,
-                        child_map: &task_and_child_map.child_map,
+                        child_map: task_and_child_map.child_map,
                         level: task_and_child_map.level + 1,
                     }
                     .into()
@@ -222,7 +227,7 @@ impl ToFlatTaskTreeElement for Vec<Task> {
     }
 }
 
-impl<'a> From<TaskTreeElement> for Vec<FlatTaskTreeElement> {
+impl From<TaskTreeElement> for Vec<FlatTaskTreeElement> {
     fn from(tree: TaskTreeElement) -> Self {
         let mut parent_ids = tree.parent_ids.clone();
         parent_ids.push(tree.task_tree.id);
@@ -253,7 +258,7 @@ impl<'a> From<TaskTreeElement> for Vec<FlatTaskTreeElement> {
 impl Database {
     /// Create a database object with a connection to an SQLite database.
     /// The database file will be created if it doesn't exist, along with any parent directories
-    /// 
+    ///
     /// # Arguments
     /// * `path` - The path to the SQLite database file  
     ///            If the file doesn't exist, it will be created along with any missing parent directories  
@@ -262,21 +267,31 @@ impl Database {
     ///
     ///
     pub async fn new(path: Option<String>) -> Result<Self, sqlx::Error> {
-        let path = if let Some(path) = path {
-            PathBuf::from(path)
+        let path_str = if path == Some("sqlite::memory:".to_owned()) {
+            "sqlite::memory:".to_owned()
         } else {
-            AppDirs::new(Some("TeaL"), true).unwrap().data_dir.join("TeaL.db")
+            let path = if let Some(path) = path {
+                PathBuf::from(path)
+            } else {
+                AppDirs::new(Some("TeaL"), true)
+                    .unwrap()
+                    .data_dir
+                    .join("TeaL.db")
+            };
+
+            if !path.try_exists()? {
+                fs::create_dir_all(path.parent().unwrap())?;
+
+                let file = File::create(path.as_path())?;
+                drop(file); // drop the file so it is closed
+            }
+            path.to_str()
+                .expect("Your paths contain non-unicode characters")
+                .to_owned()
         };
 
-        fs::create_dir_all(path.parent().unwrap())?;
-
-        if !path.try_exists()? {
-            let file = File::create(path.as_path())?;
-            drop(file); // drop the file so it is closed
-        }
-
         Ok(Self {
-            connection: SqliteConnection::connect(path.to_str().expect("Your paths contain non-unicode characters")).await?,
+            connection: SqliteConnection::connect(&path_str).await?,
         })
     }
 
@@ -286,11 +301,7 @@ impl Database {
             .await
     }
 
-    pub async fn add_task(
-        &mut self,
-        task: &str,
-        parent: Option<i64>,
-    ) -> Result<Task, sqlx::Error> {
+    pub async fn add_task(&mut self, task: &str, parent: Option<i64>) -> Result<Task, sqlx::Error> {
         sqlx::query_as!(
             Task,
             "INSERT INTO tasks VALUES (null, ?, false, ?) 
@@ -402,7 +413,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_task_test() {
-        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
+        let mut db = Database::new(Some("sqlite::memory:".to_owned()))
+            .await
+            .unwrap();
 
         db.setup().await.unwrap();
 
@@ -415,7 +428,9 @@ mod tests {
 
     #[tokio::test]
     async fn remove_task_test() {
-        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
+        let mut db = Database::new(Some("sqlite::memory:".to_owned()))
+            .await
+            .unwrap();
 
         db.setup().await.unwrap();
 
@@ -437,7 +452,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_tasks_with_children_test() {
-        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
+        let mut db = Database::new(Some("sqlite::memory:".to_owned()))
+            .await
+            .unwrap();
 
         db.setup().await.unwrap();
 
@@ -457,8 +474,15 @@ mod tests {
 
     #[tokio::test]
     #[should_panic]
+    /// This is a regression test, previously this was the single way to add a cycle to the 'tree'.
+    /// As that's now patched we should never be able to get cycles so long as the user doesn't
+    /// manually edit the database (e.g. with an SQL client). Even so, they would not be able to
+    /// add a task that refers to itself as that is protected by a trigger in the SQLite database
+    /// itself.
     async fn disallow_self_referencing_parent_test() {
-        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
+        let mut db = Database::new(Some("sqlite::memory:".to_owned()))
+            .await
+            .unwrap();
 
         db.setup().await.unwrap();
 

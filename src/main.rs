@@ -1,12 +1,11 @@
 use eyre::Result;
 use std::env;
-use tabled::Table;
 use ui::{teardown, DisplayingTasksData};
 
+mod cli;
 mod database;
 mod sorting;
 mod ui;
-mod cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {

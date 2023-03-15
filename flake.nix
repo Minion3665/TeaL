@@ -18,6 +18,7 @@
           sqlite
           cargo
           rustc
+          clippy
           rust-analyzer
         ];
         buildInputs = [];
