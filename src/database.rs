@@ -1,6 +1,10 @@
-use std::collections::HashMap;
+use platform_dirs::AppDirs;
+use std::{borrow::Cow, collections::HashMap, path::PathBuf, fs::{self, File}};
 
 use color_eyre::Report;
+use crossterm::style::Stylize;
+use tabled::Tabled;
+
 use sqlx::{sqlite::SqliteQueryResult, Connection, SqliteConnection};
 
 // Schema is on <app.dbdesigner.net>
@@ -17,6 +21,43 @@ pub struct Task {
     pub parent: Option<i64>,
 }
 // See also: https://www.geeksforgeeks.org/recursive-join-in-sql/
+
+impl Into<i64> for Task {
+    fn into(self) -> i64 {
+        self.id
+    }
+}
+
+impl Tabled for FlatTaskTreeElement {
+    const LENGTH: usize = 3;
+
+    fn headers() -> Vec<Cow<'static, str>> {
+        vec![
+            "Number".cyan().bold().to_string().into(),
+            "Task".cyan().bold().to_string().into(),
+            "Done?".cyan().bold().to_string().into(),
+        ]
+    }
+    fn fields(&self) -> Vec<Cow<str>> {
+        vec![
+            (self
+                .parent_ids
+                .clone()
+                .into_iter()
+                .map(|id| id.to_string() + ".")
+                .collect::<Vec<String>>()
+                .join("")
+                + &self.task.id.to_string())
+                .into(),
+            self.task.description.to_owned().into(),
+            if self.task.complete {
+                "Done".green().to_string().into()
+            } else {
+                "Not done".red().to_string().into()
+            },
+        ]
+    }
+}
 
 impl From<&TaskTree> for Task {
     fn from(item: &TaskTree) -> Self {
@@ -38,31 +79,48 @@ pub struct TaskTree {
     pub level: usize,
 }
 
-impl TaskTree {
-    fn from_task_and_children(
-        task: &Task,
-        children: &HashMap<i64, Vec<Task>>,
-        level: usize,
-    ) -> Self {
-        Self::from_task_and_task_trees(
-            task,
-            children
-                .get(&task.id)
+struct TaskAndChildMap<'a, 'b> {
+    task: &'a Task,
+    child_map: &'b HashMap<i64, Vec<Task>>,
+    level: usize,
+}
+impl<'a, 'b> From<TaskAndChildMap<'a, 'b>> for TaskTree {
+    fn from(task_and_child_map: TaskAndChildMap<'a, 'b>) -> Self {
+        TaskAndChildTrees {
+            task: task_and_child_map.task,
+            children: task_and_child_map
+                .child_map
+                .get(&task_and_child_map.task.id)
                 .unwrap_or(&Vec::<Task>::default())
                 .into_iter()
-                .map(|task| TaskTree::from_task_and_children(task, &children, level + 1))
+                .map(|task| {
+                    TaskAndChildMap {
+                        task,
+                        child_map: &task_and_child_map.child_map,
+                        level: task_and_child_map.level + 1,
+                    }
+                    .into()
+                })
                 .collect(),
-            level,
-        )
+            level: task_and_child_map.level,
+        }
+        .into()
     }
+}
 
-    fn from_task_and_task_trees(task: &Task, children: Vec<TaskTree>, level: usize) -> Self {
+struct TaskAndChildTrees<'a> {
+    task: &'a Task,
+    children: Vec<TaskTree>,
+    level: usize,
+}
+impl<'a> From<TaskAndChildTrees<'a>> for TaskTree {
+    fn from(task_and_tree: TaskAndChildTrees<'a>) -> Self {
         TaskTree {
-            id: task.id,
-            description: task.description.clone(),
-            complete: task.complete,
-            children,
-            level,
+            id: task_and_tree.task.id,
+            description: task_and_tree.task.description.clone(),
+            complete: task_and_tree.task.complete,
+            children: task_and_tree.children,
+            level: task_and_tree.level,
         }
     }
 }
@@ -97,13 +155,23 @@ impl TryFrom<Vec<Task>> for TaskTree {
                 for task in tasks {
                     if let Some(parent) = task.parent {
                         if !task_ids.contains(&parent) {
-                            return Ok(Self::from_task_and_children(&task, &children, 0));
+                            return Ok(TaskAndChildMap {
+                                task: &task,
+                                child_map: &children,
+                                level: 0,
+                            }
+                            .into());
                         }
                     }
                 }
                 Err(Report::msg("No root task found"))
             }
-            Some(root) => Ok(Self::from_task_and_children(&root, &children, 0)),
+            Some(root) => Ok(TaskAndChildMap {
+                task: &root,
+                child_map: &children,
+                level: 0,
+            }
+            .into()),
         }
     }
 }
@@ -121,11 +189,13 @@ pub struct FlatTaskTreeElement {
     pub level: usize,
     pub last_under_parent: bool,
     pub task: Task,
+    pub parent_ids: Vec<i64>,
 }
 
 struct TaskTreeElement {
     pub last_under_parent: bool,
     pub task_tree: TaskTree,
+    pub parent_ids: Vec<i64>,
 }
 
 impl From<TaskTree> for Vec<FlatTaskTreeElement> {
@@ -133,23 +203,47 @@ impl From<TaskTree> for Vec<FlatTaskTreeElement> {
         TaskTreeElement {
             last_under_parent: true,
             task_tree: tree,
-        }.into()
+            parent_ids: vec![],
+        }
+        .into()
     }
 }
 
-impl From<TaskTreeElement> for Vec<FlatTaskTreeElement> {
+pub(super) trait ToFlatTaskTreeElement {
+    fn try_to_flat_task_tree_element(self) -> eyre::Result<Vec<FlatTaskTreeElement>>;
+}
+impl ToFlatTaskTreeElement for Vec<Task> {
+    fn try_to_flat_task_tree_element(self) -> eyre::Result<Vec<FlatTaskTreeElement>> {
+        let task_tree = TaskTree::try_from(self)?;
+        Ok(task_tree.into())
+        // We can't just implement TryFrom here as we can only implement traits that are from a
+        // different crate on types from this crate. As we don't define Vec in this crate, it isn't
+        // possible to implement TryFrom for Vec<Task>
+    }
+}
+
+impl<'a> From<TaskTreeElement> for Vec<FlatTaskTreeElement> {
     fn from(tree: TaskTreeElement) -> Self {
+        let mut parent_ids = tree.parent_ids.clone();
+        parent_ids.push(tree.task_tree.id);
+
         let mut result: Vec<FlatTaskTreeElement> = vec![FlatTaskTreeElement {
             level: tree.task_tree.level,
             task: Task::from(&tree.task_tree),
             last_under_parent: tree.last_under_parent,
+            parent_ids: tree.parent_ids,
         }];
+
         let children_length = tree.task_tree.children.len();
         for (index, child) in tree.task_tree.children.into_iter().enumerate() {
-            result.append(&mut TaskTreeElement{
-                task_tree: child,
-                last_under_parent: index + 1 == children_length,
-            }.into());
+            result.append(
+                &mut TaskTreeElement {
+                    task_tree: child,
+                    last_under_parent: index + 1 == children_length,
+                    parent_ids: parent_ids.to_owned(),
+                }
+                .into(),
+            );
         }
 
         result
@@ -157,9 +251,32 @@ impl From<TaskTreeElement> for Vec<FlatTaskTreeElement> {
 }
 
 impl Database {
-    pub async fn new() -> Result<Self, sqlx::Error> {
+    /// Create a database object with a connection to an SQLite database.
+    /// The database file will be created if it doesn't exist, along with any parent directories
+    /// 
+    /// # Arguments
+    /// * `path` - The path to the SQLite database file  
+    ///            If the file doesn't exist, it will be created along with any missing parent directories  
+    ///            If you want to open an in-memory database, you can pass `"sqlite::memory:"` as the path
+    ///            If you pass None, a database will be created in the application's data directory. This is platform-dependant but generally it is ~/.local/share/TeaL/TeaL.db in Linux
+    ///
+    ///
+    pub async fn new(path: Option<String>) -> Result<Self, sqlx::Error> {
+        let path = if let Some(path) = path {
+            PathBuf::from(path)
+        } else {
+            AppDirs::new(Some("TeaL"), true).unwrap().data_dir.join("TeaL.db")
+        };
+
+        fs::create_dir_all(path.parent().unwrap())?;
+
+        if !path.try_exists()? {
+            let file = File::create(path.as_path())?;
+            drop(file); // drop the file so it is closed
+        }
+
         Ok(Self {
-            connection: SqliteConnection::connect("sqlite::memory:").await?,
+            connection: SqliteConnection::connect(path.to_str().expect("Your paths contain non-unicode characters")).await?,
         })
     }
 
@@ -172,12 +289,8 @@ impl Database {
     pub async fn add_task(
         &mut self,
         task: &str,
-        parent: Option<&Task>,
+        parent: Option<i64>,
     ) -> Result<Task, sqlx::Error> {
-        let parent_id = match parent {
-            None => None,
-            Some(parent) => Some(parent.id),
-        };
         sqlx::query_as!(
             Task,
             "INSERT INTO tasks VALUES (null, ?, false, ?) 
@@ -186,17 +299,67 @@ impl Database {
                       complete, 
                       parent",
             task,
-            parent_id,
+            parent,
         )
         .fetch_one(&mut self.connection)
         .await
     }
 
-    pub async fn remove_task(&mut self, index: i64) -> Result<u64, sqlx::Error> {
-        Ok(sqlx::query!("DELETE FROM tasks WHERE id = ?", index)
-            .execute(&mut self.connection)
-            .await?
-            .rows_affected())
+    /// Removes a task from the database by ID, and returns how many rows were affected
+    /// This will be 0 if the task was not found
+    /// This will be 1 if the task was found and removed
+    /// If the task had children, they may be cascade deleted which will be reflected in the return value
+    pub async fn remove_task(&mut self, task_id: i64) -> Result<Vec<Task>, sqlx::Error> {
+        sqlx::query_as!(
+            Task,
+            "WITH RECURSIVE subtask_tree AS (
+                SELECT *
+                FROM tasks
+                WHERE id = ?
+            UNION ALL
+                SELECT subtasks.*
+                FROM tasks subtasks
+            INNER JOIN subtask_tree ON subtask_tree.id = subtasks.parent
+        )
+        DELETE FROM tasks WHERE id IN (SELECT id FROM subtask_tree)
+            RETURNING id as 'id!',
+                      description as 'description!',
+                      complete as 'complete!', 
+                      parent",
+            task_id
+        )
+        .fetch_all(&mut self.connection)
+        .await
+        // Special thanks to https://stackoverflow.com/a/10381384/12293760 for supplying a way to
+        // delete rather than just select the tasks from the recursive subtree
+        //
+        // Note that we can't just ON DELETE CASCADE as that doesn't let us return the deleted
+        // tasks. This is the only way I found to do both in a single query.
+    }
+
+    pub async fn set_completion(
+        &mut self,
+        index: i64,
+        completed: bool,
+    ) -> Result<Task, sqlx::Error> {
+        let task = sqlx::query!(
+            "UPDATE tasks SET complete = ? WHERE id = ?
+                        RETURNING *",
+            completed,
+            index
+        )
+        .fetch_one(&mut self.connection)
+        .await?;
+
+        match (task.id, task.description, task.complete, task.parent) {
+            (Some(id), Some(description), Some(complete), parent) => Ok(Task {
+                id,
+                description,
+                complete,
+                parent,
+            }),
+            _ => Err(sqlx::Error::RowNotFound),
+        }
     }
 
     pub async fn list_tasks(&mut self, include_children: bool) -> Result<Vec<Task>, sqlx::Error> {
@@ -239,7 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_task_test() {
-        let mut db = Database::new().await.unwrap();
+        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
 
         db.setup().await.unwrap();
 
@@ -252,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_task_test() {
-        let mut db = Database::new().await.unwrap();
+        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
 
         db.setup().await.unwrap();
 
@@ -266,22 +429,22 @@ mod tests {
 
         assert_eq!(db.list_tasks(true).await.unwrap().len(), 1);
 
-        assert_eq!(db.remove_task(1).await.unwrap(), 1);
-        db.remove_task(0).await.unwrap();
+        assert_eq!(db.remove_task(1).await.unwrap().len(), 1);
+        assert_eq!(db.remove_task(1).await.unwrap().len(), 0);
 
         assert_eq!(db.list_tasks(true).await.unwrap().len(), 0);
     }
 
     #[tokio::test]
     async fn list_tasks_with_children_test() {
-        let mut db = Database::new().await.unwrap();
+        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
 
         db.setup().await.unwrap();
 
         assert_eq!(db.list_tasks(true).await.unwrap().len(), 0);
 
         let task = db.add_task("A test task", None).await.unwrap();
-        db.add_task("A child task", Some(&task)).await.unwrap();
+        db.add_task("A child task", Some(task.id)).await.unwrap();
 
         assert_eq!(db.list_tasks(true).await.unwrap().len(), 2);
         assert_eq!(db.list_tasks(false).await.unwrap().len(), 1);
@@ -290,5 +453,17 @@ mod tests {
 
         // Ensure that subtasks are properly cascade-deleted
         assert_eq!(db.list_tasks(true).await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn disallow_self_referencing_parent_test() {
+        let mut db = Database::new(Some("sqlite::memory:".to_owned())).await.unwrap();
+
+        db.setup().await.unwrap();
+
+        assert_eq!(db.list_tasks(true).await.unwrap().len(), 0);
+
+        db.add_task("A test task", Some(1)).await.unwrap();
     }
 }

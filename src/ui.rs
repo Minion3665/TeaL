@@ -32,6 +32,12 @@ pub enum DisplayingTasksStates {
     Search,
 }
 
+#[derive(PartialEq)]
+pub enum DisplayingTaskFullscreenStates {
+    Normal,
+    Create,
+}
+
 pub trait StateData {
     fn get_command_palette_text(&self) -> &str;
 }
@@ -66,7 +72,7 @@ impl StateData for DisplayingTaskFullscreenData {
 pub enum States {
     Quitting,
     DisplayingTasks(DisplayingTasksStates, DisplayingTasksData),
-    DisplayingTaskFullscreen(DisplayingTaskFullscreenData),
+    DisplayingTaskFullscreen(DisplayingTaskFullscreenStates, DisplayingTaskFullscreenData),
 }
 
 pub fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -100,7 +106,7 @@ fn draw_status_lines(frame: &mut Frame<CrosstermBackend<Stdout>>, state: &States
 
     let state_data: Option<&dyn StateData> = if let States::DisplayingTasks(_, state_data) = state {
         Some(state_data)
-    } else if let States::DisplayingTaskFullscreen(state_data) = state {
+    } else if let States::DisplayingTaskFullscreen(_, state_data) = state {
         Some(state_data)
     } else {
         None
@@ -131,7 +137,7 @@ fn draw_status_lines(frame: &mut Frame<CrosstermBackend<Stdout>>, state: &States
             DisplayingTasksStates::Create => "Append",
             DisplayingTasksStates::Search => "Search",
         },
-        States::DisplayingTaskFullscreen(_) => "Task",
+        States::DisplayingTaskFullscreen(_, _) => "Task",
         States::Quitting => return frame.size(),
     };
 
@@ -250,21 +256,48 @@ pub async fn display_task_fullscreen(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state_data: DisplayingTaskFullscreenData,
 ) -> Result<States, Report> {
-    let task_tree = db.list_subtasks(state_data.task_id).await?;
-
     loop {
+        let task_tree = db.list_subtasks(state_data.task_id).await?;
+
         terminal.draw(|frame| {
-            let remaining_space =
-                draw_status_lines(frame, &States::DisplayingTaskFullscreen(state_data.clone()));
+            let remaining_space = draw_status_lines(
+                frame,
+                &States::DisplayingTaskFullscreen(
+                    DisplayingTaskFullscreenStates::Normal,
+                    state_data.clone(),
+                ),
+            );
 
             let description = widgets::Paragraph::new(task_tree.description.clone())
-                .style(Style::default().add_modifier(Modifier::UNDERLINED));
+                .style(Style::default().add_modifier(Modifier::BOLD));
             frame.render_widget(
                 description,
                 Rect {
                     x: 1,
                     y: 1,
                     width: task_tree.description.len().try_into().unwrap(),
+                    height: 1,
+                },
+            );
+
+            let completion_state = match task_tree.complete {
+                true => widgets::Paragraph::new("(Done)").style(
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                false => widgets::Paragraph::new("(Not done)").style(
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            };
+            frame.render_widget(
+                completion_state,
+                Rect {
+                    x: <usize as TryInto<u16>>::try_into(task_tree.description.len()).unwrap() + 3,
+                    y: 1,
+                    width: 10,
                     height: 1,
                 },
             );
@@ -282,7 +315,8 @@ pub async fn display_task_fullscreen(
             let mut all_indent_lines: Vec<HashSet<usize>> = vec![HashSet::new()];
 
             for line in task_tree.clone().into_iter().skip(1) {
-                let mut previous_indent_lines = all_indent_lines[all_indent_lines.len() - 1].clone();
+                let mut previous_indent_lines =
+                    all_indent_lines[all_indent_lines.len() - 1].clone();
 
                 if line.last_under_parent {
                     previous_indent_lines.remove(&line.level);
@@ -298,76 +332,83 @@ pub async fn display_task_fullscreen(
                     .windows(3)
                     .zip(all_indent_lines)
                     .map(|lines| {
-                        let ([line_before, line, line_after], indent_lines) = lines else { unreachable!() };
-                        // Windows(3) must *always* return 3 elements here
-                        let line = line.as_ref().unwrap();
+                        if let ([line_before, line, line_after], indent_lines) = lines {
+                            // Windows(3) must *always* return 3 elements here
+                            let line = line.as_ref().unwrap();
 
-                        let box_drawing_top = match line_before {
-                            None => BoxDrawing::EndOfList,
-                            Some(line_before) => {
-                                if line_before.level == line.level {
-                                    BoxDrawing::Equal
-                                } else if line_before.level > line.level {
-                                    BoxDrawing::Indented
-                                } else {
-                                    BoxDrawing::Dedented
-                                }
-                            }
-                        };
-
-                        let box_drawing_bottom = match line_after {
-                            None => BoxDrawing::EndOfList,
-                            Some(line_after) => {
-                                if line_after.level == line.level {
-                                    BoxDrawing::Equal
-                                } else if line_after.level > line.level {
-                                    BoxDrawing::Indented
-                                } else {
-                                    BoxDrawing::Dedented
-                                }
-                            }
-                        };
-
-                        let box_drawing_character = match (box_drawing_top, box_drawing_bottom, line.last_under_parent) {
-                            (BoxDrawing::EndOfList, BoxDrawing::Dedented, _) => unreachable!(),
-                            (BoxDrawing::EndOfList, _, _) => "",
-                            (
-                                _,
-                                BoxDrawing::Indented,
-                                false
-                            ) => "├─",
-                            (
-                                _,
-                                BoxDrawing::EndOfList | BoxDrawing::Indented | BoxDrawing::Dedented,
-                                _
-                            ) => "└─",
-                            (_, BoxDrawing::Equal, _) => "├─",
-                        };
-
-                        Spans::from(vec![
-                            Span::raw(format!(
-                                "{}{}{} ",
-                                if line.level == 0 { "" } else { "   " },
-                                (0..line.level).skip(1).map(
-                                    |level| {
-                                        if indent_lines.contains(&level) {
-                                            "│    "
-                                        } else {
-                                            "     "
-                                        }
+                            let box_drawing_top = match line_before {
+                                None => BoxDrawing::EndOfList,
+                                Some(line_before) => {
+                                    if line_before.level == line.level {
+                                        BoxDrawing::Equal
+                                    } else if line_before.level > line.level {
+                                        BoxDrawing::Indented
+                                    } else {
+                                        BoxDrawing::Dedented
                                     }
-                                ).collect::<Vec<&str>>().join(""),
-                                box_drawing_character,
-                            )),
-                            Span::styled(
-                                line.task.description.clone(),
-                                if line.level == 0 {
-                                    Style::default().fg(Color::Cyan)
-                                } else {
-                                    Style::default()
-                                },
-                            ),
-                        ])
+                                }
+                            };
+
+                            let box_drawing_bottom = match line_after {
+                                None => BoxDrawing::EndOfList,
+                                Some(line_after) => {
+                                    if line_after.level == line.level {
+                                        BoxDrawing::Equal
+                                    } else if line_after.level > line.level {
+                                        BoxDrawing::Indented
+                                    } else {
+                                        BoxDrawing::Dedented
+                                    }
+                                }
+                            };
+
+                            let box_drawing_character =
+                                match (box_drawing_top, box_drawing_bottom, line.last_under_parent)
+                                {
+                                    (BoxDrawing::EndOfList, BoxDrawing::Dedented, _) => {
+                                        unreachable!()
+                                    }
+                                    (BoxDrawing::EndOfList, _, _) => "",
+                                    (_, BoxDrawing::Indented, false) => "├─",
+                                    (
+                                        _,
+                                        BoxDrawing::EndOfList
+                                        | BoxDrawing::Indented
+                                        | BoxDrawing::Dedented,
+                                        _,
+                                    ) => "└─",
+                                    (_, BoxDrawing::Equal, _) => "├─",
+                                };
+
+                            Spans::from(vec![
+                                Span::raw(format!(
+                                    "{}{}{} ",
+                                    if line.level == 0 { "" } else { "   " },
+                                    (0..line.level)
+                                        .skip(1)
+                                        .map(|level| {
+                                            if indent_lines.contains(&level) {
+                                                "│    "
+                                            } else {
+                                                "     "
+                                            }
+                                        })
+                                        .collect::<Vec<&str>>()
+                                        .join(""),
+                                    box_drawing_character,
+                                )),
+                                Span::styled(
+                                    line.task.description.clone(),
+                                    if line.level == 0 {
+                                        Style::default().fg(Color::Cyan)
+                                    } else {
+                                        Style::default()
+                                    },
+                                ),
+                            ])
+                        } else {
+                            unreachable!()
+                        }
                     })
                     .map(|line| widgets::ListItem::new(line))
                     .collect::<Vec<widgets::ListItem>>(),
@@ -390,11 +431,12 @@ pub async fn display_task_fullscreen(
             Event::FocusGained => todo!(),
             Event::FocusLost => todo!(),
             Event::Key(event) => match event.code {
+            KeyCode::Char(' ') => db.set_completion(task_tree.id, !task_tree.complete).await?,
                 KeyCode::Char('q') => break,
                 _ => continue,
             },
             _ => continue,
-        }
+        };
     }
 
     Ok(States::DisplayingTasks(
@@ -498,8 +540,9 @@ pub async fn display_tasks(
                 KeyCode::Enter => {
                     if let Some(selected_task) = state_data.selected_task {
                         return Ok(States::DisplayingTaskFullscreen(
+                            DisplayingTaskFullscreenStates::Normal,
                             DisplayingTaskFullscreenData {
-                                command_palette_text: "Press 'q' to return to the task list"
+                                command_palette_text: "Press 'q' to return to the task list or <SPACE> to toggle completion"
                                     .to_owned(),
                                 task_id: selected_task,
                                 selected_task: None,
@@ -590,7 +633,7 @@ pub async fn ask_for_tasks(
     let mut task = String::new();
 
     state_data.command_palette_text =
-        "Press <ENTER> to finish adding the task, or <ESCAPE> to cancel".to_owned();
+        "Press <ENTER> to finish adding the task or <ESCAPE> to cancel".to_owned();
     loop {
         terminal.draw(|frame| {
             let remaining_space = draw_status_lines(
@@ -688,8 +731,12 @@ pub async fn display_state(
         States::DisplayingTasks(DisplayingTasksStates::Search, state_data) => {
             Ok(search_tasks(db, terminal, state_data).await?)
         }
-        States::DisplayingTaskFullscreen(state_data) => {
+        States::DisplayingTaskFullscreen(DisplayingTaskFullscreenStates::Normal, state_data) => {
             Ok(display_task_fullscreen(db, terminal, state_data).await?)
+        }
+        States::DisplayingTaskFullscreen(DisplayingTaskFullscreenStates::Create, state_data) => {
+            todo!()
+            // Ok(add_subtask_of(db, terminal, state_data).await?)
         }
         States::Quitting => panic!("display_state called when the application is already quitting"),
     }

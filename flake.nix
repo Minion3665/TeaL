@@ -16,6 +16,9 @@
           bashInteractive
           beekeeper-studio
           sqlite
+          cargo
+          rustc
+          rust-analyzer
         ];
         buildInputs = [];
       };
